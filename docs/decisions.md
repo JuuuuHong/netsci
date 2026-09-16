@@ -131,3 +131,4 @@
   - **derive**: `Option` 판별 시 `macro_rules!` 그룹·괄호 타입을 벗긴다. `precision` 을 정수·`bool`·`char`·`String`·`str`(및 그 `Option`)에 쓰면 컴파일 에러(문자열은 잘리고 정수는 무시되는 함정). `skip = …` 에는 "값을 받지 않는다" 에러, `precision` 은 `u16` 범위 밖이면 속성 위치에 에러.
   - **테스트 보강**: PageRank 정확값·고정점 테스트, 로컬 TCP 서버로 `HttpClient` 재시도·한도·요청 간격 테스트(`tokio` 기능을 늘리지 않으려고 표준 라이브러리 `TcpListener` 사용, 요청 간격 기대값은 구현 상수 대신 명세 값 100ms 를 직접 적음). trybuild 는 명세의 3건에 새 에러 3건을 더했다.
   - **Linux Docker 권한**: 이미지는 명세대로 비루트로 두고, README 에 Linux 용 `--user "$(id -u):$(id -g)"` 명령을 따로 적었다 (명세의 사용 예는 그대로 유지).
+    Docker Desktop(macOS) 바인드 마운트는 소유권을 바꿔 보여 주므로, Docker VM 의 Linux 파일시스템(named volume)에 uid 1000·755 디렉터리를 만들어 확인했다: 기본 실행(uid 10001)은 `Permission denied`, `--user 1000:1000` 은 성공, root 소유 디렉터리는 `--user` 로도 실패(그래서 `mkdir -p data` 를 먼저 안내).
