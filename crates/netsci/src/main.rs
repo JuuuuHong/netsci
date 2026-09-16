@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use netsci::fetch::{self, FetchParams};
+use netsci::openalex::HttpClient;
 
 #[derive(Debug, Parser)]
 #[command(name = "netsci", version, about = "OpenAlex 인용·개념 네트워크 분석기")]
@@ -72,5 +74,32 @@ enum Command {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    anyhow::bail!("아직 구현되지 않은 명령: {:?}", cli.command)
+    match cli.command {
+        Command::Fetch {
+            query,
+            filter,
+            limit,
+        } => {
+            let api_key = std::env::var("OPENALEX_API_KEY")
+                .ok()
+                .filter(|k| !k.is_empty());
+            let mut client = HttpClient::new(api_key)?;
+            let params = FetchParams {
+                query,
+                filter,
+                limit,
+            };
+            let summary = fetch::fetch(&mut client, &cli.data, &params).await?;
+            println!(
+                "pages: {} (cache {}, new {}), works: {}, cost_usd: {:.3}",
+                summary.cached_pages + summary.fetched_pages,
+                summary.cached_pages,
+                summary.fetched_pages,
+                summary.works,
+                summary.cost_usd
+            );
+            Ok(())
+        }
+        other => anyhow::bail!("아직 구현되지 않은 명령: {other:?}"),
+    }
 }

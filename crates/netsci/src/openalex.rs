@@ -2,6 +2,8 @@
 //!
 //! OpenAlex 는 필드를 빼거나 `null` 로 보내는 경우가 있으므로 모든 필드를 관대하게 받는다.
 
+use std::time::{Duration, Instant};
+
 use serde::{Deserialize, Deserializer};
 
 /// OpenAlex 엔티티 URL 접두사. 저장 시 떼어 낸다.
@@ -69,4 +71,162 @@ where
     T: Default + Deserialize<'de>,
 {
     Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+// ---------------------------------------------------------------------------
+// API 클라이언트
+// ---------------------------------------------------------------------------
+
+/// works 목록 엔드포인트.
+pub const WORKS_URL: &str = "https://api.openalex.org/works";
+/// 한 페이지 크기. 최대값을 써서 호출 횟수(=비용)를 줄인다.
+pub const PER_PAGE: u32 = 200;
+/// 요청할 필드.
+pub const SELECT_FIELDS: &str =
+    "id,display_name,publication_year,cited_by_count,referenced_works,concepts";
+/// 남은 일일 한도가 이 값(USD) 미만이면 중단한다.
+pub const MIN_REMAINING_USD: f64 = 0.01;
+/// 429/5xx 최대 재시도 횟수.
+pub const MAX_RETRIES: u32 = 3;
+/// 요청 간 최소 간격.
+pub const MIN_REQUEST_INTERVAL: Duration = Duration::from_millis(100);
+
+/// 한 페이지 요청 인자.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PageRequest {
+    pub query: String,
+    pub filter: Option<String>,
+    /// 첫 페이지는 `*`, 이후는 직전 페이지의 `meta.next_cursor`
+    pub cursor: String,
+}
+
+/// 받아 온 페이지 본문과 비용 헤더.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FetchedPage {
+    /// 응답 본문 원문. 그대로 캐시 파일에 저장한다.
+    pub body: String,
+    /// `x-ratelimit-cost-usd`
+    pub cost_usd: Option<f64>,
+    /// `x-ratelimit-remaining-usd`
+    pub remaining_usd: Option<f64>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum OpenAlexError {
+    #[error("HTTP 요청 실패: {0}")]
+    Http(#[from] reqwest::Error),
+    #[error("OpenAlex 가 {status} 를 돌려줬다: {body}")]
+    Status { status: u16, body: String },
+}
+
+/// works 페이지를 받아 오는 추상화. 테스트에서 가짜 구현을 주입하려고 트레이트로 둔다.
+pub trait WorksClient {
+    fn fetch_page(
+        &mut self,
+        request: &PageRequest,
+    ) -> impl Future<Output = Result<FetchedPage, OpenAlexError>> + Send;
+}
+
+/// reqwest 기반 실제 클라이언트.
+#[derive(Debug)]
+pub struct HttpClient {
+    http: reqwest::Client,
+    base_url: String,
+    api_key: Option<String>,
+    last_request: Option<Instant>,
+}
+
+impl HttpClient {
+    /// `api_key` 가 `Some` 이면 모든 요청에 `api_key` 파라미터를 붙인다.
+    pub fn new(api_key: Option<String>) -> Result<Self, OpenAlexError> {
+        let http = reqwest::Client::builder()
+            .user_agent(concat!("netsci/", env!("CARGO_PKG_VERSION")))
+            .timeout(Duration::from_secs(60))
+            .build()?;
+        Ok(Self {
+            http,
+            base_url: WORKS_URL.to_string(),
+            api_key,
+            last_request: None,
+        })
+    }
+
+    /// 직전 요청에서 최소 간격이 지나지 않았으면 기다린다.
+    async fn throttle(&mut self) {
+        if let Some(last) = self.last_request {
+            let elapsed = last.elapsed();
+            if elapsed < MIN_REQUEST_INTERVAL {
+                tokio::time::sleep(MIN_REQUEST_INTERVAL - elapsed).await;
+            }
+        }
+        self.last_request = Some(Instant::now());
+    }
+
+    fn query_params(&self, request: &PageRequest) -> Vec<(&'static str, String)> {
+        let mut params = vec![("search", request.query.clone())];
+        if let Some(filter) = &request.filter {
+            params.push(("filter", filter.clone()));
+        }
+        params.push(("per-page", PER_PAGE.to_string()));
+        params.push(("cursor", request.cursor.clone()));
+        params.push(("select", SELECT_FIELDS.to_string()));
+        if let Some(key) = &self.api_key {
+            params.push(("api_key", key.clone()));
+        }
+        params
+    }
+}
+
+impl WorksClient for HttpClient {
+    async fn fetch_page(&mut self, request: &PageRequest) -> Result<FetchedPage, OpenAlexError> {
+        let params = self.query_params(request);
+        let mut attempt = 0;
+        loop {
+            self.throttle().await;
+            let response = self.http.get(&self.base_url).query(&params).send().await?;
+            let status = response.status();
+            let headers = response.headers().clone();
+
+            if status.is_success() {
+                return Ok(FetchedPage {
+                    body: response.text().await?,
+                    cost_usd: header_f64(&headers, "x-ratelimit-cost-usd"),
+                    remaining_usd: header_f64(&headers, "x-ratelimit-remaining-usd"),
+                });
+            }
+
+            let retryable = status.as_u16() == 429 || status.is_server_error();
+            if !retryable || attempt >= MAX_RETRIES {
+                return Err(OpenAlexError::Status {
+                    status: status.as_u16(),
+                    body: response.text().await.unwrap_or_default(),
+                });
+            }
+            let retry_after = headers
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok());
+            let delay = retry_delay(attempt, retry_after);
+            eprintln!(
+                "경고: OpenAlex {status}, {:.1}초 후 재시도 ({}/{MAX_RETRIES})",
+                delay.as_secs_f64(),
+                attempt + 1
+            );
+            tokio::time::sleep(delay).await;
+            attempt += 1;
+        }
+    }
+}
+
+/// 재시도 대기 시간. `Retry-After`(초 단위 정수)가 있으면 그 값, 없으면 1s·2s·4s 지수 백오프.
+///
+/// HTTP 날짜 형식의 `Retry-After` 는 해석하지 않고 백오프로 대체한다.
+pub fn retry_delay(attempt: u32, retry_after: Option<&str>) -> Duration {
+    retry_after
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(1u64 << attempt.min(10)))
+}
+
+fn header_f64(headers: &reqwest::header::HeaderMap, name: &str) -> Option<f64> {
+    headers.get(name)?.to_str().ok()?.trim().parse().ok()
 }
