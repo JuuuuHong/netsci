@@ -5,21 +5,23 @@ use std::path::PathBuf;
 
 use netsci::corpus;
 use netsci::fetch::{self, FetchError, FetchParams, page_path};
-use netsci::openalex::{FetchedPage, OpenAlexError, PageRequest, WorksClient, retry_delay};
+use netsci::openalex::{
+    FetchedPage, MAX_RETRY_DELAY, OpenAlexError, PageRequest, WorksClient, retry_delay,
+};
 
 const FIXTURE: &str = include_str!("fixtures/works_page.json");
 
 /// 미리 정한 응답을 순서대로 돌려주고 받은 요청을 기록하는 가짜 클라이언트.
 #[derive(Default)]
 struct FakeClient {
-    responses: VecDeque<FetchedPage>,
+    responses: VecDeque<Result<FetchedPage, OpenAlexError>>,
     requests: Vec<PageRequest>,
 }
 
 impl WorksClient for FakeClient {
     async fn fetch_page(&mut self, request: &PageRequest) -> Result<FetchedPage, OpenAlexError> {
         self.requests.push(request.clone());
-        Ok(self.responses.pop_front().expect("예상하지 못한 HTTP 호출"))
+        self.responses.pop_front().expect("예상하지 못한 HTTP 호출")
     }
 }
 
@@ -79,12 +81,14 @@ async fn 캐시_페이지가_있으면_http_를_호출하지_않는다() {
 async fn 새_페이지를_받아_저장하고_cursor_를_이어간다() {
     let dir = temp_dir("fetch-new");
     let mut client = FakeClient::default();
+    client.responses.push_back(Ok(fetched(
+        page_json(&["W1", "W2"], Some("c1")),
+        0.001,
+        0.09,
+    )));
     client
         .responses
-        .push_back(fetched(page_json(&["W1", "W2"], Some("c1")), 0.001, 0.09));
-    client
-        .responses
-        .push_back(fetched(page_json(&["W2", "W3"], None), 0.001, 0.089));
+        .push_back(Ok(fetched(page_json(&["W2", "W3"], None), 0.001, 0.089)));
 
     let summary = fetch::fetch(&mut client, &dir, &params("q", 100))
         .await
@@ -116,7 +120,7 @@ async fn 중간에_끊긴_수집은_캐시_다음부터_이어받는다() {
     let mut client = FakeClient::default();
     client
         .responses
-        .push_back(fetched(page_json(&["W2"], None), 0.001, 0.09));
+        .push_back(Ok(fetched(page_json(&["W2"], None), 0.001, 0.09)));
     let summary = fetch::fetch(&mut client, &dir, &params("q", 100))
         .await
         .unwrap();
@@ -136,7 +140,7 @@ async fn 남은_한도가_부족하면_중단한다() {
     let mut client = FakeClient::default();
     client
         .responses
-        .push_back(fetched(page_json(&["W1"], Some("c1")), 0.001, 0.005));
+        .push_back(Ok(fetched(page_json(&["W1"], Some("c1")), 0.001, 0.005)));
 
     let summary = fetch::fetch(&mut client, &dir, &params("q", 100))
         .await
@@ -195,4 +199,105 @@ fn 재시도_대기시간() {
         retry_delay(1, Some("Wed, 21 Oct 2015 07:28:00 GMT")),
         Duration::from_secs(2)
     );
+    assert_eq!(
+        retry_delay(0, Some("50000")),
+        MAX_RETRY_DELAY,
+        "상한을 넘지 않는다"
+    );
+}
+
+#[tokio::test]
+async fn 마지막_페이지에서_한도가_낮아도_완료로_본다() {
+    let dir = temp_dir("budget-last");
+    let mut client = FakeClient::default();
+    client
+        .responses
+        .push_back(Ok(fetched(page_json(&["W1"], None), 0.001, 0.005)));
+    let summary = fetch::fetch(&mut client, &dir, &params("q", 100))
+        .await
+        .unwrap();
+    assert!(!summary.stopped_by_budget, "더 받을 페이지가 없었다");
+
+    // limit 에 도달한 페이지도 마찬가지
+    let dir2 = temp_dir("budget-limit");
+    let mut client = FakeClient::default();
+    client.responses.push_back(Ok(fetched(
+        page_json(&["W1", "W2"], Some("c1")),
+        0.001,
+        0.005,
+    )));
+    let summary = fetch::fetch(&mut client, &dir2, &params("q", 2))
+        .await
+        .unwrap();
+    assert!(!summary.stopped_by_budget);
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_dir_all(&dir2).unwrap();
+}
+
+#[tokio::test]
+async fn works_페이지가_아닌_본문은_캐시하지_않는다() {
+    for (name, body) in [
+        ("html", "<html>captive portal</html>"),
+        ("error-json", r#"{"error": "Invalid query"}"#),
+        ("truncated", r#"{"meta": {}, "results": [{"id": "W1""#),
+    ] {
+        let dir = temp_dir(&format!("bad-body-{name}"));
+        let mut client = FakeClient::default();
+        client
+            .responses
+            .push_back(Ok(fetched(body.to_string(), 0.001, 0.09)));
+        let err = fetch::fetch(&mut client, &dir, &params("q", 100))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                FetchError::Json { .. } | FetchError::NotWorksPage { .. }
+            ),
+            "{name}: {err}"
+        );
+        assert!(!page_path(&dir, 0).exists(), "{name}: 깨진 본문이 캐시됐다");
+
+        // 다음 실행은 다시 HTTP 를 호출해 정상 페이지를 받는다
+        client
+            .responses
+            .push_back(Ok(fetched(page_json(&["W1"], None), 0.001, 0.09)));
+        let summary = fetch::fetch(&mut client, &dir, &params("q", 100))
+            .await
+            .unwrap();
+        assert_eq!((summary.fetched_pages, summary.works), (1, 1), "{name}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn 첫_요청이_실패했으면_다른_인자로_다시_실행할_수_있다() {
+    let dir = temp_dir("first-fail");
+    let mut client = FakeClient::default();
+    client.responses.push_back(Err(OpenAlexError::Status {
+        status: 400,
+        body: "invalid filter".to_string(),
+    }));
+    let err = fetch::fetch(&mut client, &dir, &params("typo", 100))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, FetchError::OpenAlex(_)), "{err}");
+
+    client
+        .responses
+        .push_back(Ok(fetched(page_json(&["W1"], None), 0.001, 0.09)));
+    let summary = fetch::fetch(&mut client, &dir, &params("fixed", 100))
+        .await
+        .unwrap();
+    assert_eq!(summary.works, 1);
+    let saved: FetchParams =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("query.json")).unwrap()).unwrap();
+    assert_eq!(saved.query, "fixed");
+
+    // 페이지가 캐시된 뒤에는 다시 막는다
+    let err = fetch::fetch(&mut client, &dir, &params("other", 100))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, FetchError::QueryMismatch { .. }), "{err}");
+    std::fs::remove_dir_all(&dir).unwrap();
 }

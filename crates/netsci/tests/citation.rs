@@ -59,6 +59,14 @@ fn pagerank_dangling_노드만_있으면_균등() {
 }
 
 #[test]
+fn pagerank_범위_밖_간선은_무시하고_합은_1() {
+    let ranks = pagerank(&[vec![5], vec![0, 9]]);
+    assert!((sum(&ranks) - 1.0).abs() < EPS, "합 = {}", sum(&ranks));
+    // 노드 0 은 유효 간선이 없어 dangling, 노드 1 은 0 만 가리킨다
+    assert_eq!(ranks, pagerank(&[vec![], vec![0]]));
+}
+
+#[test]
 fn pagerank_빈_그래프는_빈_결과() {
     assert!(pagerank(&[]).is_empty());
 }

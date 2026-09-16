@@ -90,31 +90,35 @@ impl CitationGraph {
 /// PR_new[v] = (1 - d)/N + d * ( Σ_{u→v} PR[u]/outdeg(u) + dangling_sum/N )
 /// ```
 /// 나가는 간선이 없는 dangling 노드의 점수는 모든 노드에 균등 분배한다.
-/// 인접 리스트에 범위를 벗어난 노드 번호가 있으면 그 간선은 무시한다.
+/// 범위를 벗어난 노드 번호의 간선은 없는 것으로 보고 출차수에서도 뺀다 (합이 1 로 유지된다).
 pub fn pagerank(adjacency: &[Vec<usize>]) -> Vec<f64> {
     let n = adjacency.len();
     if n == 0 {
         return Vec::new();
     }
+    let out_degrees: Vec<usize> = adjacency
+        .iter()
+        .map(|targets| targets.iter().filter(|&&v| v < n).count())
+        .collect();
     let n_f = n as f64;
     let mut rank = vec![1.0 / n_f; n];
     let mut next = vec![0.0; n];
 
     for _ in 0..MAX_ITERATIONS {
-        let dangling_sum: f64 = adjacency
+        let dangling_sum: f64 = out_degrees
             .iter()
             .zip(&rank)
-            .filter(|(targets, _)| targets.is_empty())
+            .filter(|(degree, _)| **degree == 0)
             .map(|(_, r)| r)
             .sum();
         let base = (1.0 - DAMPING) / n_f + DAMPING * dangling_sum / n_f;
         next.fill(base);
 
         for (u, targets) in adjacency.iter().enumerate() {
-            if targets.is_empty() {
+            if out_degrees[u] == 0 {
                 continue;
             }
-            let share = DAMPING * rank[u] / targets.len() as f64;
+            let share = DAMPING * rank[u] / out_degrees[u] as f64;
             for &v in targets {
                 if let Some(slot) = next.get_mut(v) {
                     *slot += share;

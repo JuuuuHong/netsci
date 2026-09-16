@@ -88,6 +88,8 @@ pub const SELECT_FIELDS: &str =
 pub const MIN_REMAINING_USD: f64 = 0.01;
 /// 429/5xx 최대 재시도 횟수.
 pub const MAX_RETRIES: u32 = 3;
+/// 재시도 대기 상한. 한도 소진 시 자정까지 같은 긴 `Retry-After` 에 묶이지 않게 한다.
+pub const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
 /// 요청 간 최소 간격.
 pub const MIN_REQUEST_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -115,6 +117,10 @@ pub struct FetchedPage {
 pub enum OpenAlexError {
     #[error("HTTP 요청 실패")]
     Http(#[from] reqwest::Error),
+    #[error(
+        "OpenAlex 일일 한도가 거의 소진됐다 (HTTP {status}, 남은 한도 {remaining_usd} USD). 내일 다시 실행하라"
+    )]
+    BudgetExhausted { status: u16, remaining_usd: f64 },
     #[error("OpenAlex 가 {status} 를 돌려줬다: {body}")]
     Status { status: u16, body: String },
 }
@@ -195,6 +201,15 @@ impl WorksClient for HttpClient {
                 });
             }
 
+            // 실패 응답에서도 남은 한도를 읽는다. 소진됐으면 재시도해도 소용없다.
+            if let Some(remaining_usd) = header_f64(&headers, "x-ratelimit-remaining-usd")
+                && remaining_usd < MIN_REMAINING_USD
+            {
+                return Err(OpenAlexError::BudgetExhausted {
+                    status: status.as_u16(),
+                    remaining_usd,
+                });
+            }
             let retryable = status.as_u16() == 429 || status.is_server_error();
             if !retryable || attempt >= MAX_RETRIES {
                 return Err(OpenAlexError::Status {
@@ -218,6 +233,7 @@ impl WorksClient for HttpClient {
 }
 
 /// 재시도 대기 시간. `Retry-After`(초 단위 정수)가 있으면 그 값, 없으면 1s·2s·4s 지수 백오프.
+/// 어느 쪽이든 [`MAX_RETRY_DELAY`] 를 넘지 않는다.
 ///
 /// HTTP 날짜 형식의 `Retry-After` 는 해석하지 않고 백오프로 대체한다.
 pub fn retry_delay(attempt: u32, retry_after: Option<&str>) -> Duration {
@@ -225,6 +241,7 @@ pub fn retry_delay(attempt: u32, retry_after: Option<&str>) -> Duration {
         .and_then(|v| v.trim().parse::<u64>().ok())
         .map(Duration::from_secs)
         .unwrap_or_else(|| Duration::from_secs(1u64 << attempt.min(10)))
+        .min(MAX_RETRY_DELAY)
 }
 
 fn header_f64(headers: &reqwest::header::HeaderMap, name: &str) -> Option<f64> {

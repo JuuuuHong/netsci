@@ -63,6 +63,8 @@ pub enum FetchError {
         path: PathBuf,
         source: serde_json::Error,
     },
+    #[error("{path}: `results` 배열이 없어 works 페이지가 아니다")]
+    NotWorksPage { path: PathBuf },
     #[error(transparent)]
     OpenAlex(#[from] OpenAlexError),
     #[error(transparent)]
@@ -96,42 +98,48 @@ pub async fn fetch<C: WorksClient>(
 
     while collected.len() < params.limit {
         let path = page_path(data_dir, index);
-        let body = if tokio::fs::try_exists(&path).await.unwrap_or(false) {
+        let (page, low_budget) = if tokio::fs::try_exists(&path).await.unwrap_or(false) {
             summary.cached_pages += 1;
-            read_string(&path).await?
+            let body = read_string(&path).await?;
+            (parse_page(&path, &body)?, false)
         } else {
             let request = PageRequest {
                 query: params.query.clone(),
                 filter: params.filter.clone(),
                 cursor: cursor.clone(),
             };
-            let page = client.fetch_page(&request).await?;
-            write_atomic(&path, &page.body).await?;
+            let fetched = client.fetch_page(&request).await?;
+            // 검증을 통과한 본문만 캐시한다. 깨진 본문이 캐시되면 이후 실행이 전부 그 파일에 막힌다.
+            let page = parse_page(&path, &fetched.body)?;
+            write_atomic(&path, &fetched.body).await?;
             summary.fetched_pages += 1;
-            summary.cost_usd += page.cost_usd.unwrap_or(0.0);
-            if let Some(remaining) = page.remaining_usd
-                && remaining < MIN_REMAINING_USD
-            {
-                eprintln!(
-                    "경고: OpenAlex 남은 한도 {remaining:.4} USD < {MIN_REMAINING_USD} USD. \
-                     수집을 중단한다 (다시 실행하면 이어서 받는다)"
-                );
-                summary.stopped_by_budget = true;
-            }
-            page.body
+            summary.cost_usd += fetched.cost_usd.unwrap_or(0.0);
+            let low = fetched
+                .remaining_usd
+                .is_some_and(|remaining| remaining < MIN_REMAINING_USD);
+            (page, low)
         };
 
-        let page: WorksPage = serde_json::from_str(&body).map_err(|source| FetchError::Json {
-            path: path.clone(),
-            source,
-        })?;
         let is_empty = page.results.is_empty();
         collected.extend(page.results.into_iter().filter_map(Work::from_api));
 
-        match page.meta.next_cursor {
-            Some(next) if !is_empty && !summary.stopped_by_budget => cursor = next,
+        let next = match page.meta.next_cursor {
+            Some(next) if !is_empty => next,
             _ => break,
+        };
+        if collected.len() >= params.limit {
+            break;
         }
+        // 더 받을 페이지가 실제로 남았을 때만 예산 부족으로 멈춘다.
+        if low_budget {
+            eprintln!(
+                "경고: OpenAlex 남은 한도가 {MIN_REMAINING_USD} USD 미만이다. \
+                 수집을 중단한다 (다시 실행하면 이어서 받는다)"
+            );
+            summary.stopped_by_budget = true;
+            break;
+        }
+        cursor = next;
         index += 1;
     }
 
@@ -143,6 +151,24 @@ pub async fn fetch<C: WorksClient>(
     Ok(summary)
 }
 
+/// 페이지 본문을 파싱한다. `results` 배열이 없는 JSON(에러 응답 등)은 works 페이지가 아니므로 거부한다.
+fn parse_page(path: &Path, body: &str) -> Result<WorksPage, FetchError> {
+    let json_err = |source| FetchError::Json {
+        path: path.to_path_buf(),
+        source,
+    };
+    let value: serde_json::Value = serde_json::from_str(body).map_err(json_err)?;
+    if !value
+        .get("results")
+        .is_some_and(serde_json::Value::is_array)
+    {
+        return Err(FetchError::NotWorksPage {
+            path: path.to_path_buf(),
+        });
+    }
+    serde_json::from_value(value).map_err(json_err)
+}
+
 /// `limit` 에서 자른 뒤 id 기준으로 중복을 제거한다 (처음 나온 것을 남긴다).
 pub fn truncate_and_dedup(mut works: Vec<Work>, limit: usize) -> Vec<Work> {
     works.truncate(limit);
@@ -152,6 +178,8 @@ pub fn truncate_and_dedup(mut works: Vec<Work>, limit: usize) -> Vec<Work> {
 }
 
 /// `query.json` 이 없으면 쓰고, 있으면 인자가 같은지 확인한다.
+/// 인자가 달라도 캐시된 페이지가 하나도 없으면 섞일 캐시가 없으므로 새 인자로 덮어쓴다
+/// (예: 오타 난 filter 로 첫 요청이 실패한 뒤 고쳐서 다시 실행).
 async fn check_or_write_query(data_dir: &Path, params: &FetchParams) -> Result<(), FetchError> {
     let path = data_dir.join(QUERY_FILE);
     if tokio::fs::try_exists(&path).await.unwrap_or(false) {
@@ -161,20 +189,43 @@ async fn check_or_write_query(data_dir: &Path, params: &FetchParams) -> Result<(
                 path: path.clone(),
                 source,
             })?;
-        if &existing != params {
+        if &existing != params && has_cached_pages(&data_dir.join(RAW_DIR)).await? {
             return Err(FetchError::QueryMismatch {
                 path,
                 existing: Box::new(existing),
                 requested: Box::new(params.clone()),
             });
         }
-        return Ok(());
+        if &existing == params {
+            return Ok(());
+        }
     }
     let text = serde_json::to_string_pretty(params).map_err(|source| FetchError::Json {
         path: path.clone(),
         source,
     })?;
     write_atomic(&path, &text).await
+}
+
+/// `raw/` 에 `page-*.json` 캐시 파일이 있는지.
+async fn has_cached_pages(raw_dir: &Path) -> Result<bool, FetchError> {
+    let io_err = |source| FetchError::Io {
+        path: raw_dir.to_path_buf(),
+        source,
+    };
+    let mut entries = match tokio::fs::read_dir(raw_dir).await {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(io_err(err)),
+    };
+    while let Some(entry) = entries.next_entry().await.map_err(io_err)? {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("page-") && name.ends_with(".json") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 async fn read_string(path: &Path) -> Result<String, FetchError> {
