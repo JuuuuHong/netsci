@@ -1,16 +1,16 @@
 [package]
-name = "netsci"
+name = "netsci-report"
+description = "Report 트레이트와 표·JSON·CSV 출력 포맷터"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [dependencies]
-tokio.workspace = true
-reqwest.workspace = true
+netsci-report-derive = { path = "../netsci-report-derive" }
 serde.workspace = true
 serde_json.workspace = true
-clap.workspace = true
-anyhow.workspace = true
 thiserror.workspace = true
-netsci-report = { path = "../netsci-report" }
+
+[dev-dependencies]
+serde.workspace = true

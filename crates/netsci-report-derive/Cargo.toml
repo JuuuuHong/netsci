@@ -1,0 +1,20 @@
+[package]
+name = "netsci-report-derive"
+description = "netsci-report 의 #[derive(Report)] 매크로"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn.workspace = true
+quote.workspace = true
+proc-macro2.workspace = true
+
+[dev-dependencies]
+trybuild.workspace = true
+netsci-report = { path = "../netsci-report" }
+serde.workspace = true

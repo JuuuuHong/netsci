@@ -1,0 +1,5 @@
+error: Report can only be derived for structs with named fields
+ --> tests/ui/tuple_struct.rs:4:11
+  |
+4 | struct Row(usize, String);
+  |           ^^^^^^^^^^^^^^^

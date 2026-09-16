@@ -1,5 +1,8 @@
 //! 각 명령의 계산 결과를 출력용 행으로 만든다. 출력 형식은 `main.rs` 가 정한다.
 
+use netsci_report::Report;
+use serde::Serialize;
+
 use crate::citation::{CitationGraph, pagerank};
 use crate::concept::{ConceptFilter, ConceptGraph};
 use crate::corpus::Work;
@@ -9,7 +12,7 @@ use crate::gaps::find_gaps;
 pub const TITLE_WIDTH: usize = 60;
 
 /// `netsci stats` 결과.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Report, Serialize)]
 pub struct StatsRow {
     pub works: usize,
     pub year_min: Option<i32>,
@@ -17,13 +20,14 @@ pub struct StatsRow {
     pub internal_edges: usize,
     pub total_references: usize,
     /// 내부 간선 / 전체 참조 (참조가 없으면 0)
+    #[report(precision = 4)]
     pub internal_ratio: f64,
     /// 기본 필터(§5.2) 통과 후 고유 개념 수
     pub concepts: usize,
 }
 
 /// `netsci concepts` 한 행.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Report, Serialize)]
 pub struct ConceptRow {
     pub rank: usize,
     pub concept: String,
@@ -34,7 +38,7 @@ pub struct ConceptRow {
 }
 
 /// `netsci gaps` 한 행.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Report, Serialize)]
 pub struct GapRow {
     pub rank: usize,
     pub concept_a: String,
@@ -42,17 +46,20 @@ pub struct GapRow {
     pub works_a: u32,
     pub works_b: u32,
     pub observed: u32,
+    #[report(precision = 2)]
     pub expected: f64,
+    #[report(precision = 3)]
     pub lift: f64,
 }
 
 /// `netsci citations` 한 행.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Report, Serialize)]
 pub struct CitationRow {
     pub rank: usize,
     pub id: String,
     pub title: String,
     pub year: Option<i32>,
+    #[report(precision = 6)]
     pub pagerank: f64,
     pub in_corpus_citations: usize,
     pub cited_by_count: u64,

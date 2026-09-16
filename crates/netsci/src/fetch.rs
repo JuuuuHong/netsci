@@ -6,6 +6,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use netsci_report::Report;
 use serde::{Deserialize, Serialize};
 
 use crate::corpus::{self, CorpusError, WORKS_FILE, Work};
@@ -25,8 +26,10 @@ pub struct FetchParams {
 }
 
 /// 수집 결과 요약.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Report, Serialize)]
 pub struct FetchSummary {
+    /// 읽은 페이지 수 합계 (캐시 + 새 호출)
+    pub pages: usize,
     /// 캐시 파일에서 읽은 페이지 수
     pub cached_pages: usize,
     /// 새로 호출해서 받은 페이지 수
@@ -34,6 +37,7 @@ pub struct FetchSummary {
     /// `works.jsonl` 에 쓴 작품 수
     pub works: usize,
     /// 이번 실행에서 새 호출로 쓴 비용 합계 (USD)
+    #[report(precision = 3)]
     pub cost_usd: f64,
     /// 남은 한도 부족으로 도중에 멈췄는지
     pub stopped_by_budget: bool,
@@ -133,6 +137,7 @@ pub async fn fetch<C: WorksClient>(
 
     let works = truncate_and_dedup(collected, params.limit);
     summary.works = works.len();
+    summary.pages = summary.cached_pages + summary.fetched_pages;
     let works_path = data_dir.join(WORKS_FILE);
     corpus::write_jsonl(&works_path, &works)?;
     Ok(summary)

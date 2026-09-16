@@ -9,6 +9,8 @@ use netsci::concept::ConceptFilter;
 use netsci::corpus::{self, WORKS_FILE, Work};
 use netsci::fetch::{self, FetchParams};
 use netsci::openalex::HttpClient;
+use netsci_report::{Format, Report, render};
+use serde::Serialize;
 
 #[derive(Debug, Parser)]
 #[command(name = "netsci", version, about = "OpenAlex 인용·개념 네트워크 분석기")]
@@ -32,6 +34,16 @@ enum OutputFormat {
     Csv,
 }
 
+impl From<OutputFormat> for Format {
+    fn from(value: OutputFormat) -> Self {
+        match value {
+            OutputFormat::Table => Format::Table,
+            OutputFormat::Json => Format::Json,
+            OutputFormat::Csv => Format::Csv,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
     /// OpenAlex 에서 논문을 받아 works.jsonl 로 저장한다
@@ -39,7 +51,7 @@ enum Command {
         /// 검색어
         #[arg(long)]
         query: String,
-        /// OpenAlex filter 문자열
+        /// OpenAlex filter 문자열 (예: "publication_year:2018-2024,cited_by_count:>20")
         #[arg(long)]
         filter: Option<String>,
         /// 최대 작품 수
@@ -78,6 +90,7 @@ enum Command {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let format = Format::from(cli.format);
     match cli.command {
         Command::Fetch {
             query,
@@ -94,46 +107,15 @@ async fn main() -> anyhow::Result<()> {
                 limit,
             };
             let summary = fetch::fetch(&mut client, &cli.data, &params).await?;
-            println!(
-                "pages: {} (cache {}, new {}), works: {}, cost_usd: {:.3}",
-                summary.cached_pages + summary.fetched_pages,
-                summary.cached_pages,
-                summary.fetched_pages,
-                summary.works,
-                summary.cost_usd
-            );
-            Ok(())
+            print_rows(&[summary], format)
         }
         Command::Stats => {
             let works = load_works(&cli.data)?;
-            let s = commands::stats(&works);
-            println!(
-                "works: {}, years: {:?}-{:?}, internal_edges: {}, total_references: {}, internal_ratio: {:.4}, concepts: {}",
-                s.works,
-                s.year_min,
-                s.year_max,
-                s.internal_edges,
-                s.total_references,
-                s.internal_ratio,
-                s.concepts
-            );
-            Ok(())
+            print_rows(&[commands::stats(&works)], format)
         }
         Command::Citations { top } => {
             let works = load_works(&cli.data)?;
-            for r in commands::citations(&works, top) {
-                println!(
-                    "{}\t{}\t{}\t{:?}\t{:.6}\t{}\t{}",
-                    r.rank,
-                    r.id,
-                    r.title,
-                    r.year,
-                    r.pagerank,
-                    r.in_corpus_citations,
-                    r.cited_by_count
-                );
-            }
-            Ok(())
+            print_rows(&commands::citations(&works, top), format)
         }
         Command::Concepts {
             top,
@@ -145,13 +127,7 @@ async fn main() -> anyhow::Result<()> {
                 min_level,
                 min_score,
             };
-            for r in commands::concepts(&works, &filter, top) {
-                println!(
-                    "{}\t{}\t{}\t{}\t{}\t{:?}",
-                    r.rank, r.concept, r.level, r.works, r.strength, r.top_neighbor
-                );
-            }
-            Ok(())
+            print_rows(&commands::concepts(&works, &filter, top), format)
         }
         Command::Gaps {
             top,
@@ -164,22 +140,14 @@ async fn main() -> anyhow::Result<()> {
                 min_level,
                 min_score,
             };
-            for r in commands::gaps(&works, &filter, min_works, top) {
-                println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{:.3}",
-                    r.rank,
-                    r.concept_a,
-                    r.concept_b,
-                    r.works_a,
-                    r.works_b,
-                    r.observed,
-                    r.expected,
-                    r.lift
-                );
-            }
-            Ok(())
+            print_rows(&commands::gaps(&works, &filter, min_works, top), format)
         }
     }
+}
+
+fn print_rows<T: Report + Serialize>(rows: &[T], format: Format) -> anyhow::Result<()> {
+    print!("{}", render(rows, format)?);
+    Ok(())
 }
 
 /// `<data>/works.jsonl` 을 읽는다.

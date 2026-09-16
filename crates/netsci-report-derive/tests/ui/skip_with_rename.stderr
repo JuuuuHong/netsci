@@ -1,0 +1,5 @@
+error: `skip` cannot be combined with other report attributes
+ --> tests/ui/skip_with_rename.rs:6:20
+  |
+6 |     #[report(skip, rename = "id")]
+  |                    ^^^^^^^^^^^^^
