@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use netsci::commands;
+use netsci::concept::ConceptFilter;
 use netsci::corpus::{self, WORKS_FILE, Work};
 use netsci::fetch::{self, FetchParams};
 use netsci::openalex::HttpClient;
@@ -107,13 +108,14 @@ async fn main() -> anyhow::Result<()> {
             let works = load_works(&cli.data)?;
             let s = commands::stats(&works);
             println!(
-                "works: {}, years: {:?}-{:?}, internal_edges: {}, total_references: {}, internal_ratio: {:.4}",
+                "works: {}, years: {:?}-{:?}, internal_edges: {}, total_references: {}, internal_ratio: {:.4}, concepts: {}",
                 s.works,
                 s.year_min,
                 s.year_max,
                 s.internal_edges,
                 s.total_references,
-                s.internal_ratio
+                s.internal_ratio,
+                s.concepts
             );
             Ok(())
         }
@@ -133,7 +135,50 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        other => anyhow::bail!("아직 구현되지 않은 명령: {other:?}"),
+        Command::Concepts {
+            top,
+            min_level,
+            min_score,
+        } => {
+            let works = load_works(&cli.data)?;
+            let filter = ConceptFilter {
+                min_level,
+                min_score,
+            };
+            for r in commands::concepts(&works, &filter, top) {
+                println!(
+                    "{}\t{}\t{}\t{}\t{}\t{:?}",
+                    r.rank, r.concept, r.level, r.works, r.strength, r.top_neighbor
+                );
+            }
+            Ok(())
+        }
+        Command::Gaps {
+            top,
+            min_works,
+            min_level,
+            min_score,
+        } => {
+            let works = load_works(&cli.data)?;
+            let filter = ConceptFilter {
+                min_level,
+                min_score,
+            };
+            for r in commands::gaps(&works, &filter, min_works, top) {
+                println!(
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{:.3}",
+                    r.rank,
+                    r.concept_a,
+                    r.concept_b,
+                    r.works_a,
+                    r.works_b,
+                    r.observed,
+                    r.expected,
+                    r.lift
+                );
+            }
+            Ok(())
+        }
     }
 }
 

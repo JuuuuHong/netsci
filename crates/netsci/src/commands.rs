@@ -1,7 +1,9 @@
 //! 각 명령의 계산 결과를 출력용 행으로 만든다. 출력 형식은 `main.rs` 가 정한다.
 
 use crate::citation::{CitationGraph, pagerank};
+use crate::concept::{ConceptFilter, ConceptGraph};
 use crate::corpus::Work;
+use crate::gaps::find_gaps;
 
 /// 제목을 자를 글자 수.
 pub const TITLE_WIDTH: usize = 60;
@@ -16,6 +18,32 @@ pub struct StatsRow {
     pub total_references: usize,
     /// 내부 간선 / 전체 참조 (참조가 없으면 0)
     pub internal_ratio: f64,
+    /// 기본 필터(§5.2) 통과 후 고유 개념 수
+    pub concepts: usize,
+}
+
+/// `netsci concepts` 한 행.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConceptRow {
+    pub rank: usize,
+    pub concept: String,
+    pub level: u8,
+    pub works: u32,
+    pub strength: u64,
+    pub top_neighbor: Option<String>,
+}
+
+/// `netsci gaps` 한 행.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GapRow {
+    pub rank: usize,
+    pub concept_a: String,
+    pub concept_b: String,
+    pub works_a: u32,
+    pub works_b: u32,
+    pub observed: u32,
+    pub expected: f64,
+    pub lift: f64,
 }
 
 /// `netsci citations` 한 행.
@@ -45,6 +73,7 @@ pub fn stats(works: &[Work]) -> StatsRow {
         } else {
             internal_edges as f64 / total_references as f64
         },
+        concepts: ConceptGraph::build(works, &ConceptFilter::default()).concept_count(),
     }
 }
 
@@ -77,6 +106,55 @@ pub fn citations(works: &[Work], top: usize) -> Vec<CitationRow> {
                 in_corpus_citations: in_degrees[node],
                 cited_by_count: work.cited_by_count,
             }
+        })
+        .collect()
+}
+
+/// 가중 연결강도 상위 `top` 개. 동점이면 등장 논문 수 내림차순, 이름 오름차순.
+pub fn concepts(works: &[Work], filter: &ConceptFilter, top: usize) -> Vec<ConceptRow> {
+    let graph = ConceptGraph::build(works, filter);
+    let strengths = graph.strengths();
+    let neighbors = graph.top_neighbors();
+
+    let mut order: Vec<usize> = (0..graph.concept_count()).collect();
+    order.sort_by(|&a, &b| {
+        strengths[b]
+            .cmp(&strengths[a])
+            .then(graph.works[b].cmp(&graph.works[a]))
+            .then(graph.names[a].cmp(&graph.names[b]))
+    });
+
+    order
+        .into_iter()
+        .take(top)
+        .enumerate()
+        .map(|(i, c)| ConceptRow {
+            rank: i + 1,
+            concept: graph.names[c].clone(),
+            level: graph.levels[c],
+            works: graph.works[c],
+            strength: strengths[c],
+            top_neighbor: neighbors[c].map(|n| graph.names[n as usize].clone()),
+        })
+        .collect()
+}
+
+/// 공백 개념쌍 상위 `top` 개.
+pub fn gaps(works: &[Work], filter: &ConceptFilter, min_works: usize, top: usize) -> Vec<GapRow> {
+    let graph = ConceptGraph::build(works, filter);
+    find_gaps(&graph, min_works)
+        .into_iter()
+        .take(top)
+        .enumerate()
+        .map(|(i, g)| GapRow {
+            rank: i + 1,
+            concept_a: graph.names[g.a as usize].clone(),
+            concept_b: graph.names[g.b as usize].clone(),
+            works_a: g.works_a,
+            works_b: g.works_b,
+            observed: g.observed,
+            expected: g.expected,
+            lift: g.lift,
         })
         .collect()
 }

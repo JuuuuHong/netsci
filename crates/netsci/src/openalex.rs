@@ -113,7 +113,7 @@ pub struct FetchedPage {
 
 #[derive(Debug, thiserror::Error)]
 pub enum OpenAlexError {
-    #[error("HTTP 요청 실패: {0}")]
+    #[error("HTTP 요청 실패")]
     Http(#[from] reqwest::Error),
     #[error("OpenAlex 가 {status} 를 돌려줬다: {body}")]
     Status { status: u16, body: String },
