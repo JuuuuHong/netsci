@@ -154,6 +154,65 @@ rank  concept_a                           concept_b                             
 `lift = observed / expected` 가 낮을수록 "기대보다 덜 함께 나온" 쌍입니다. 상위 20쌍은 모두 `observed = 0` 입니다.
 아래 "한계" 에서 보듯 이 중 상당수는 연구 공백이 아니라 개념 태깅의 부산물로 보입니다.
 
+### 두 번째 분야: large language model
+
+같은 조건(2018~2024 출판, 피인용 20회 초과, 2,000편)으로 분야만 바꿔 받았습니다 (API 10회 호출, $0.010).
+
+```
+docker run --rm -v "$PWD/data:/app/data" netsci fetch --query "large language model" \
+    --filter "publication_year:2018-2024,cited_by_count:>20" --limit 2000 --data data/llm-cited20
+```
+
+`stats`
+```
+works  year_min  year_max  internal_edges  total_references  internal_ratio  concepts
+-----  --------  --------  --------------  ----------------  --------------  --------
+2000   2019      2024      8197            89392             0.0917          1632
+```
+
+`concepts --top 10` — 상위 10개 중 6개가 동음이의어 오분류입니다 (`Task (project management)`, `Context (archaeology)`, `Code (set theory)` …).
+```
+rank  concept                         level  works  strength  top_neighbor
+----  ------------------------------  -----  -----  --------  -------------------------
+1     Language model                  2      276    1167      Task (project management)
+2     Task (project management)       2      157    809       Language model
+3     Context (archaeology)           2      150    708       Language model
+4     Code (set theory)               3      125    566       Language model
+5     Domain (mathematical analysis)  2      94     478       Language model
+6     Benchmark (surveying)           2      93     427       Language model
+7     Process (computing)             2      86     422       Context (archaeology)
+8     Generative grammar              2      103    397       Generative model
+9     Natural language                2      70     377       Language model
+10    Set (abstract data type)        2      74     367       Language model
+```
+
+`citations --top 5`
+```
+rank  id           title                                                         year  pagerank  in_corpus_citations  cited_by_count
+----  -----------  ------------------------------------------------------------  ----  --------  -------------------  --------------
+1     W2979826702  Transformers: State-of-the-Art Natural Language Processing    2020  0.023493  59                   8332
+2     W2911489562  BioBERT: a pre-trained biomedical language representation m…  2019  0.022083  70                   7407
+3     W3133702157  On the Dangers of Stochastic Parrots                          2021  0.019757  106                  6535
+4     W4226278401  Training language models to follow instructions with human …  2022  0.019732  246                  4347
+5     W4221143046  BNAI, NO-TOKEN, and MIND-UNITY: Pillars of a Systemic Revol…  2022  0.015966  217                  4324
+```
+
+5위의 제목은 OpenAlex 기록 그대로입니다. 이 기록(`W4221143046`)의 DOI 는 `10.48550/arxiv.2201.11903`, 저자는 Jason Wei 외로,
+실제 논문은 **"Chain-of-Thought Prompting Elicits Reasoning in Large Language Models"** 입니다 (arXiv 에서 확인).
+인용 관계는 맞으므로 PageRank 순위는 타당하지만, **제목 메타데이터가 다른 문자열로 잘못 들어가 있습니다.**
+이 기록은 자기 자신도 참조 목록에 담고 있어, 자기 인용을 뺀 코퍼스 내부 피인용은 217회입니다.
+
+`gaps --top 5` — `Health care × Task (project management)` 처럼 오분류 개념끼리 짝지어져 해석할 수 있는 조합이 나오지 않습니다.
+```
+rank  concept_a              concept_b                  works_a  works_b  observed  expected  lift
+----  ---------------------  -------------------------  -------  -------  --------  --------  -----
+1     Health care            Task (project management)  83       157      0         6.52      0.000
+2     Code (set theory)      Health care                125      83       0         5.19      0.000
+3     Benchmark (surveying)  Generative grammar         93       103      0         4.79      0.000
+4     Language model         Transformative learning    276      28       0         3.86      0.000
+5     Language model         MEDLINE                    276      27       0         3.73      0.000
+```
+
 ## 설계 결정
 
 명세(`SPEC.md`)에 없던 선택은 모두 [`docs/decisions.md`](docs/decisions.md) 에 기록했습니다. 요약:
@@ -171,6 +230,9 @@ rank  concept_a                           concept_b                             
   2,000편 중 1,811편에 `Lithium (medication)`(리튬 약물), 418편에 `Dendrite (mathematics)` 가 붙어 있어
   `concepts` 상위 2위를 `Lithium (medication)` 이 차지합니다. gaps 결과에도 `Stripping (fiber)`, `Plating (geology)`,
   `Host (biology)`, `Separator (oil production)`, `Deposition (geology)` 같은 오분류가 그대로 나옵니다. 필터로 줄일 뿐 제거하지 못합니다.
+  분야에 한정된 현상이 아닙니다. large language model 코퍼스에서는 `concepts` 상위 10개 중 6개가 오분류였습니다.
+- **OpenAlex 메타데이터 자체가 틀린 경우가 있습니다.** large language model 코퍼스의 PageRank 5위 기록은 DOI·저자로 보면
+  Chain-of-Thought 논문인데 제목이 전혀 다른 문자열로 들어가 있습니다. 출력의 `title` 은 원 기록을 그대로 옮기므로, 순위표만 보고 논문을 판단하면 안 됩니다.
 - **`lift` 가 낮다고 연구 가치가 있다는 뜻은 아닙니다 — 단지 후보일 뿐입니다.** 예를 들어 3위 `Lithium metal × X-ray photoelectron spectroscopy`
   는 필터를 적용하기 전 원자료에서도 두 개념이 한 논문에 함께 붙은 적이 없습니다. XPS 는 이 분야에서 흔히 쓰는 분석 기법이므로,
   실제 공백이라기보다 태거가 두 개념을 함께 붙이지 않는 경향으로 해석하는 편이 자연스럽습니다. 결과는 반드시 원문으로 확인해야 합니다.
