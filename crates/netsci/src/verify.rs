@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use crate::concept::{ConceptFilter, ConceptGraph};
 use crate::corpus::Work;
-use crate::gaps::{Gap, find_gaps};
+use crate::gaps::{Gap, MIN_EXPECTED, find_gaps};
 
 /// 개념 하나를 텍스트에서 찾을 때 쓰는 표현들 (정규화된 형태).
 #[derive(Debug, Clone, PartialEq)]
@@ -34,6 +34,47 @@ pub struct VerifiedGap {
     pub text_b: u32,
     /// 제목·초록에 두 개념 표현이 모두 나오는 논문 수
     pub text_observed: u32,
+    /// 텍스트 기준 기대 공존 `text_a × text_b / N`
+    pub text_expected: f64,
+    pub verdict: Verdict,
+}
+
+/// 텍스트 검증 판정.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// 텍스트 기대 공존이 `MIN_EXPECTED` 미만 — 개념 표현이 본문에 드물어 판정할 수 없다 (별칭이 필요할 수 있다)
+    Unverifiable,
+    /// 텍스트에서도 함께 나온 논문이 없다 — 공백 후보가 유지된다
+    AbsentInText,
+    /// 텍스트에서는 함께 나온 논문이 있다 — 태그 기준 공백은 태깅 누락일 수 있다
+    CoMentioned,
+}
+
+impl Verdict {
+    /// `gaps` 와 같은 기대값 하한을 텍스트 기준에도 적용한다.
+    pub fn classify(text_expected: f64, text_observed: u32) -> Self {
+        if text_expected < MIN_EXPECTED {
+            Self::Unverifiable
+        } else if text_observed == 0 {
+            Self::AbsentInText
+        } else {
+            Self::CoMentioned
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unverifiable => "unverifiable",
+            Self::AbsentInText => "absent_in_text",
+            Self::CoMentioned => "co_mentioned",
+        }
+    }
+}
+
+impl std::fmt::Display for Verdict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// `--alias` 인자 파서. `개념 이름=추가 표현` 형태만 받는다.
@@ -149,16 +190,21 @@ pub fn verify_gaps(
         }
     }
 
+    let n = works.len().max(1) as f64;
     let empty = Vec::new();
     let verified = gaps
         .into_iter()
         .map(|gap| {
             let a = hits.get(&gap.a).unwrap_or(&empty);
             let b = hits.get(&gap.b).unwrap_or(&empty);
+            let text_observed = count_u32(intersection_len(a, b));
+            let text_expected = a.len() as f64 * b.len() as f64 / n;
             VerifiedGap {
                 text_a: count_u32(a.len()),
                 text_b: count_u32(b.len()),
-                text_observed: count_u32(intersection_len(a, b)),
+                text_observed,
+                text_expected,
+                verdict: Verdict::classify(text_expected, text_observed),
                 gap,
             }
         })

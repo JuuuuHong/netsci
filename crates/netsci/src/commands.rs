@@ -39,10 +39,14 @@ pub struct VerifyRow {
     pub expected: f64,
     /// 두 개념 태그가 함께 붙은 논문 수 (gaps 의 observed)
     pub tag_observed: u32,
-    /// 제목·초록에 두 개념 표현이 함께 나오는 논문 수
-    pub text_observed: u32,
     pub text_a: u32,
     pub text_b: u32,
+    #[report(precision = 2)]
+    pub text_expected: f64,
+    /// 제목·초록에 두 개념 표현이 함께 나오는 논문 수
+    pub text_observed: u32,
+    /// `unverifiable` · `absent_in_text` · `co_mentioned`
+    pub verdict: String,
 }
 
 /// `netsci concepts` 한 행.
@@ -204,9 +208,11 @@ pub fn verify(
             concept_b: graph.names[v.gap.b as usize].clone(),
             expected: v.gap.expected,
             tag_observed: v.gap.observed,
-            text_observed: v.text_observed,
             text_a: v.text_a,
             text_b: v.text_b,
+            text_expected: v.text_expected,
+            text_observed: v.text_observed,
+            verdict: v.verdict.to_string(),
         })
         .collect()
 }

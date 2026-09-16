@@ -6,7 +6,9 @@ use netsci::commands;
 use netsci::concept::ConceptFilter;
 use netsci::corpus::{Concept, Work};
 use netsci::openalex::{WorksPage, reconstruct_abstract};
-use netsci::verify::{Alias, ConceptTerms, concept_term, normalize, parse_alias, verify_gaps};
+use netsci::verify::{
+    Alias, ConceptTerms, Verdict, concept_term, normalize, parse_alias, verify_gaps,
+};
 
 fn concept(name: &str) -> Concept {
     Concept {
@@ -67,6 +69,26 @@ fn 텍스트_공존을_손계산과_대조한다() {
     assert_eq!(v.gap.observed, 1, "태그 기준 공존은 W6 하나");
     assert!((v.gap.expected - 3.0).abs() < 1e-12);
     assert_eq!((v.text_a, v.text_b, v.text_observed), (4, 3, 2));
+    // 텍스트 기대 공존 4 × 3 / 10 = 1.2 < 3 → 판정 불가
+    assert!((v.text_expected - 1.2).abs() < 1e-12);
+    assert_eq!(v.verdict, Verdict::Unverifiable);
+}
+
+#[test]
+fn 판정은_gaps_와_같은_기대값_하한을_쓴다() {
+    assert_eq!(Verdict::classify(2.99, 0), Verdict::Unverifiable);
+    assert_eq!(
+        Verdict::classify(2.99, 5),
+        Verdict::Unverifiable,
+        "희귀하면 공존이 있어도 판정하지 않는다"
+    );
+    assert_eq!(
+        Verdict::classify(3.0, 0),
+        Verdict::AbsentInText,
+        "경계값 3.0 은 판정 대상"
+    );
+    assert_eq!(Verdict::classify(3.0, 1), Verdict::CoMentioned);
+    assert_eq!(Verdict::CoMentioned.to_string(), "co_mentioned");
 }
 
 #[test]

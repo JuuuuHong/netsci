@@ -180,7 +180,7 @@ netsci fetch --query "lithium metal anode" \
 
 ### 4.6 `netsci verify --top 20 [--min-works 15] [--min-level 2] [--min-score 0.4] [--alias "개념=표현"]...`
 공백 개념쌍 상위 N 개를 **제목·초록 텍스트 기준 공존**과 대조한다 (§5.5).
-열: `rank`, `concept_a`, `concept_b`, `expected`(소수 2자리), `tag_observed`, `text_observed`, `text_a`, `text_b`
+열: `rank`, `concept_a`, `concept_b`, `expected`(소수 2자리), `tag_observed`, `text_a`, `text_b`, `text_expected`(소수 2자리), `text_observed`, `verdict`
 
 > 추가 이유(2026-09-17): 공백 후보 상위가 태깅 누락의 부산물이라는 것을 사례 몇 개가 아니라 모든 후보에 대해 수치로 보이기 위해서다.
 
@@ -226,6 +226,7 @@ PR_new[v] = (1 - d)/N  +  d * ( Σ_{u→v} PR[u]/outdeg(u)  +  dangling_sum/N )
 - `text_a`/`text_b` = 표현이 나오는 논문 수, `text_observed` = 둘 다 나오는 논문 수
 - 이름 일치는 개념 판정이 아니다 (`lithium` 은 약물과 금속을 구분하지 못한다). 검증은 "태그 공존 0 이 텍스트에서도 0 인가" 를 보는 용도이며 README 한계에 적는다
 - 초록이 없는 작품은 제목만 쓴다
+- `text_expected = text_a × text_b / N`. 판정: `text_expected < 3.0` 이면 `unverifiable`(표현이 본문에 드물어 판정 불가 — 별칭 필요), 아니면 `text_observed == 0` 이면 `absent_in_text`, 그 밖은 `co_mentioned`. 하한 3.0 은 §5.4 와 같은 이유
 
 ---
 
