@@ -145,13 +145,18 @@ pub struct HttpClient {
 impl HttpClient {
     /// `api_key` 가 `Some` 이면 모든 요청에 `api_key` 파라미터를 붙인다.
     pub fn new(api_key: Option<String>) -> Result<Self, OpenAlexError> {
+        Self::with_base_url(WORKS_URL, api_key)
+    }
+
+    /// 엔드포인트를 바꿔 만든다. 테스트에서 로컬 서버를 가리키는 데 쓴다.
+    pub fn with_base_url(base_url: &str, api_key: Option<String>) -> Result<Self, OpenAlexError> {
         let http = reqwest::Client::builder()
             .user_agent(concat!("netsci/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(60))
             .build()?;
         Ok(Self {
             http,
-            base_url: WORKS_URL.to_string(),
+            base_url: base_url.to_string(),
             api_key,
             last_request: None,
         })
@@ -201,8 +206,11 @@ impl WorksClient for HttpClient {
                 });
             }
 
-            // 실패 응답에서도 남은 한도를 읽는다. 소진됐으면 재시도해도 소용없다.
-            if let Some(remaining_usd) = header_f64(&headers, "x-ratelimit-remaining-usd")
+            let retryable = status.as_u16() == 429 || status.is_server_error();
+            // 재시도할 응답이면 남은 한도를 먼저 본다. 소진됐으면 재시도해도 소용없다.
+            // 400 같은 요청 오류는 한도와 무관하므로 원래 에러 본문을 그대로 보여 준다.
+            if retryable
+                && let Some(remaining_usd) = header_f64(&headers, "x-ratelimit-remaining-usd")
                 && remaining_usd < MIN_REMAINING_USD
             {
                 return Err(OpenAlexError::BudgetExhausted {
@@ -210,7 +218,6 @@ impl WorksClient for HttpClient {
                     remaining_usd,
                 });
             }
-            let retryable = status.as_u16() == 429 || status.is_server_error();
             if !retryable || attempt >= MAX_RETRIES {
                 return Err(OpenAlexError::Status {
                     status: status.as_u16(),

@@ -1,0 +1,11 @@
+error: `precision` has no meaningful effect on `String` (it truncates strings and is ignored for integers); use it only on floating-point fields
+ --> tests/ui/precision_on_string.rs:5:26
+  |
+5 |     #[report(precision = 3)]
+  |                          ^
+
+error: `precision` has no meaningful effect on `u32` (it truncates strings and is ignored for integers); use it only on floating-point fields
+ --> tests/ui/precision_on_string.rs:7:26
+  |
+7 |     #[report(precision = 2)]
+  |                          ^

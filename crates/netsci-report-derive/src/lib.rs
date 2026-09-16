@@ -17,7 +17,8 @@ const NAMED_FIELDS_ONLY: &str = "Report can only be derived for structs with nam
 /// 필드 속성:
 /// - `#[report(rename = "name")]` — 열 이름 변경
 /// - `#[report(skip)]` — 열에서 제외 (다른 속성과 함께 쓸 수 없다)
-/// - `#[report(precision = N)]` — `format!("{:.N}")` 적용
+/// - `#[report(precision = N)]` — `format!("{:.N}")` 적용. `{:.N}` 은 문자열을 N 글자로 자르고 정수에는
+///   아무 효과가 없으므로, 타입이 정수·`bool`·`char`·`String`·`str` 로 확인되면 컴파일 에러를 낸다.
 ///
 /// `Option<T>` 필드는 `None` 이면 빈 문자열이 된다.
 #[proc_macro_derive(Report, attributes(report))]
@@ -96,6 +97,9 @@ impl FieldOptions {
         for attr in field.attrs.iter().filter(|a| a.path().is_ident("report")) {
             attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("skip") {
+                    if meta.input.peek(syn::Token![=]) || meta.input.peek(syn::token::Paren) {
+                        return Err(meta.error("`skip` takes no value; write `#[report(skip)]`"));
+                    }
                     if options.skip {
                         return Err(meta.error("duplicate `skip` attribute"));
                     }
@@ -117,7 +121,13 @@ impl FieldOptions {
                         return Err(meta.error("duplicate `precision` attribute"));
                     }
                     let lit: LitInt = meta.value()?.parse()?;
-                    lit.base10_parse::<usize>()?;
+                    // format! 정밀도는 u16 범위여야 한다. 넘으면 rustc 가 derive 위치에 엉뚱한 에러를 낸다.
+                    if lit.base10_parse::<u16>().is_err() {
+                        return Err(syn::Error::new_spanned(
+                            &lit,
+                            "`precision` must be an integer between 0 and 65535",
+                        ));
+                    }
                     options.precision = Some(lit);
                 } else {
                     let key = meta.path.to_token_stream().to_string().replace(' ', "");
@@ -133,6 +143,16 @@ impl FieldOptions {
                 Ok(())
             })?;
         }
+        if let Some(lit) = &options.precision
+            && let Some(name) = non_float_type_name(&field.ty)
+        {
+            return Err(syn::Error::new_spanned(
+                lit,
+                format!(
+                    "`precision` has no meaningful effect on `{name}` (it truncates strings and is ignored for integers); use it only on floating-point fields"
+                ),
+            ));
+        }
         Ok(options)
     }
 }
@@ -141,7 +161,7 @@ impl FieldOptions {
 struct Column {
     header: LitStr,
     ident: syn::Ident,
-    precision: Option<usize>,
+    precision: Option<u16>,
     is_option: bool,
 }
 
@@ -157,7 +177,7 @@ impl Column {
             .unwrap_or_else(|| LitStr::new(&ident.unraw().to_string(), ident.span()));
         let precision = options
             .precision
-            .and_then(|lit| lit.base10_parse::<usize>().ok());
+            .and_then(|lit| lit.base10_parse::<u16>().ok());
         Self {
             header,
             ident,
@@ -191,13 +211,57 @@ impl Column {
 }
 
 /// 타입 경로의 끝 세그먼트가 `Option` 인지 본다 (`Option<T>`, `std::option::Option<T>` 등).
+/// `macro_rules!` 가 넘긴 타입(`Type::Group`)과 괄호 타입도 벗겨서 본다.
 fn is_option(ty: &Type) -> bool {
+    option_segment(strip_wrappers(ty)).is_some()
+}
+
+/// 괄호·매크로 그룹을 벗긴다.
+fn strip_wrappers(ty: &Type) -> &Type {
+    match ty {
+        Type::Group(group) => strip_wrappers(&group.elem),
+        Type::Paren(paren) => strip_wrappers(&paren.elem),
+        other => other,
+    }
+}
+
+fn option_segment(ty: &Type) -> Option<&syn::PathSegment> {
     match ty {
         Type::Path(path) if path.qself.is_none() => path
             .path
             .segments
             .last()
-            .is_some_and(|seg| seg.ident == "Option"),
-        _ => false,
+            .filter(|seg| seg.ident == "Option"),
+        _ => None,
+    }
+}
+
+/// `precision` 이 의미 없는 타입으로 확인되면 그 이름. 모르는 타입(사용자 정의 등)은 `None` 으로 허용한다.
+/// `Option<T>` 는 `T` 를, 참조는 대상 타입을 본다.
+fn non_float_type_name(ty: &Type) -> Option<String> {
+    const NON_FLOAT: &[&str] = &[
+        "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize",
+        "bool", "char", "String", "str",
+    ];
+    let ty = strip_wrappers(ty);
+    if let Type::Reference(reference) = ty {
+        return non_float_type_name(&reference.elem);
+    }
+    if let Some(seg) = option_segment(ty) {
+        if let syn::PathArguments::AngleBracketed(args) = &seg.arguments
+            && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+        {
+            return non_float_type_name(inner);
+        }
+        return None;
+    }
+    match ty {
+        Type::Path(path) if path.qself.is_none() => path
+            .path
+            .segments
+            .last()
+            .map(|seg| seg.ident.to_string())
+            .filter(|name| NON_FLOAT.contains(&name.as_str())),
+        _ => None,
     }
 }

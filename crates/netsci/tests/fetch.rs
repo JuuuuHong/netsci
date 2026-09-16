@@ -48,6 +48,19 @@ fn page_json(ids: &[&str], next_cursor: Option<&str>) -> String {
     serde_json::json!({"meta": {"next_cursor": next_cursor}, "results": results}).to_string()
 }
 
+/// 캐시 페이지를 미리 둔다. 실제 수집처럼 `query.json` 도 함께 쓴다.
+fn seed_cache(dir: &std::path::Path, params: &FetchParams, pages: &[&str]) {
+    std::fs::create_dir_all(dir.join("raw")).unwrap();
+    std::fs::write(
+        dir.join("query.json"),
+        serde_json::to_string(params).unwrap(),
+    )
+    .unwrap();
+    for (i, body) in pages.iter().enumerate() {
+        std::fs::write(page_path(dir, i), body).unwrap();
+    }
+}
+
 fn fetched(body: String, cost: f64, remaining: f64) -> FetchedPage {
     FetchedPage {
         body,
@@ -59,8 +72,7 @@ fn fetched(body: String, cost: f64, remaining: f64) -> FetchedPage {
 #[tokio::test]
 async fn 캐시_페이지가_있으면_http_를_호출하지_않는다() {
     let dir = temp_dir("cache-hit");
-    std::fs::create_dir_all(dir.join("raw")).unwrap();
-    std::fs::write(page_path(&dir, 0), FIXTURE).unwrap();
+    seed_cache(&dir, &params("lithium", 2), &[FIXTURE]);
 
     let mut client = FakeClient::default();
     let summary = fetch::fetch(&mut client, &dir, &params("lithium", 2))
@@ -114,8 +126,11 @@ async fn 새_페이지를_받아_저장하고_cursor_를_이어간다() {
 #[tokio::test]
 async fn 중간에_끊긴_수집은_캐시_다음부터_이어받는다() {
     let dir = temp_dir("resume");
-    std::fs::create_dir_all(dir.join("raw")).unwrap();
-    std::fs::write(page_path(&dir, 0), page_json(&["W1"], Some("next"))).unwrap();
+    seed_cache(
+        &dir,
+        &params("q", 100),
+        &[&page_json(&["W1"], Some("next"))],
+    );
 
     let mut client = FakeClient::default();
     client
@@ -154,8 +169,7 @@ async fn 남은_한도가_부족하면_중단한다() {
 #[tokio::test]
 async fn 다른_질의로_같은_디렉터리에_fetch_하면_에러() {
     let dir = temp_dir("mismatch");
-    std::fs::create_dir_all(dir.join("raw")).unwrap();
-    std::fs::write(page_path(&dir, 0), FIXTURE).unwrap();
+    seed_cache(&dir, &params("lithium", 2), &[FIXTURE]);
 
     let mut client = FakeClient::default();
     fetch::fetch(&mut client, &dir, &params("lithium", 2))
@@ -250,10 +264,7 @@ async fn works_페이지가_아닌_본문은_캐시하지_않는다() {
             .await
             .unwrap_err();
         assert!(
-            matches!(
-                err,
-                FetchError::Json { .. } | FetchError::NotWorksPage { .. }
-            ),
+            matches!(err, FetchError::BadPage { hint: "", .. }),
             "{name}: {err}"
         );
         assert!(!page_path(&dir, 0).exists(), "{name}: 깨진 본문이 캐시됐다");
@@ -299,5 +310,94 @@ async fn 첫_요청이_실패했으면_다른_인자로_다시_실행할_수_있
         .await
         .unwrap_err();
     assert!(matches!(err, FetchError::QueryMismatch { .. }), "{err}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+async fn 한도가_이미_소진됐으면_받은_페이지로_works_jsonl_을_쓴다() {
+    let dir = temp_dir("budget-exhausted");
+    let p = params("q", 100);
+    seed_cache(&dir, &p, &[&page_json(&["W1", "W2"], Some("c"))]);
+
+    let mut client = FakeClient::default();
+    client
+        .responses
+        .push_back(Err(OpenAlexError::BudgetExhausted {
+            status: 429,
+            remaining_usd: 0.0,
+        }));
+    let summary = fetch::fetch(&mut client, &dir, &p).await.unwrap();
+
+    assert!(summary.stopped_by_budget);
+    assert_eq!(client.requests.len(), 1);
+    assert_eq!((summary.cached_pages, summary.fetched_pages), (1, 0));
+    assert_eq!(summary.works, 2);
+    let works = corpus::read_jsonl(&dir.join("works.jsonl")).unwrap();
+    assert_eq!(works.len(), 2);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+async fn query_json_없이_캐시만_있으면_에러() {
+    let dir = temp_dir("orphan");
+    std::fs::create_dir_all(dir.join("raw")).unwrap();
+    std::fs::write(page_path(&dir, 0), FIXTURE).unwrap();
+
+    let mut client = FakeClient::default();
+    let err = fetch::fetch(&mut client, &dir, &params("totally different", 2))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, FetchError::OrphanCache { .. }), "{err}");
+    assert!(
+        !dir.join("query.json").exists(),
+        "query.json 을 새로 쓰면 안 된다"
+    );
+    assert!(!dir.join("works.jsonl").exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+async fn results_null_은_빈_페이지로_받는다() {
+    let dir = temp_dir("results-null");
+    let p = params("q", 100);
+    seed_cache(
+        &dir,
+        &p,
+        &[r#"{"meta": {"next_cursor": "c"}, "results": null}"#],
+    );
+
+    let mut client = FakeClient::default();
+    let summary = fetch::fetch(&mut client, &dir, &p).await.unwrap();
+    assert!(client.requests.is_empty(), "빈 페이지면 수집을 끝낸다");
+    assert_eq!(summary.works, 0);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+async fn 깨진_캐시_파일은_지우라고_안내한다() {
+    let dir = temp_dir("bad-cache");
+    let p = params("q", 100);
+    seed_cache(&dir, &p, &[r#"{"error": "x"}"#]);
+
+    let mut client = FakeClient::default();
+    let err = fetch::fetch(&mut client, &dir, &p).await.unwrap_err();
+    assert!(matches!(err, FetchError::BadPage { .. }), "{err}");
+    assert!(err.to_string().contains("캐시 파일을 지우고"), "{err}");
+    assert!(client.requests.is_empty());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn works_jsonl_은_임시_파일_없이_교체된다() {
+    let dir = temp_dir("atomic-jsonl");
+    let path = dir.join("works.jsonl");
+    std::fs::write(&path, "old contents\n").unwrap();
+    corpus::write_jsonl(&path, &[]).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+    let leftovers: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(leftovers, ["works.jsonl"]);
     std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -1,11 +1,12 @@
 //! CLI 진입점. clap 으로 인자를 파싱하고 해당 명령을 실행하기만 한다.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use netsci::commands;
-use netsci::concept::ConceptFilter;
+use netsci::concept::{ConceptFilter, parse_min_score};
 use netsci::corpus::{self, WORKS_FILE, Work};
 use netsci::fetch::{self, FetchParams};
 use netsci::openalex::HttpClient;
@@ -71,7 +72,7 @@ enum Command {
         top: usize,
         #[arg(long, default_value_t = 2)]
         min_level: u8,
-        #[arg(long, default_value_t = 0.4)]
+        #[arg(long, default_value_t = 0.4, value_parser = parse_min_score)]
         min_score: f64,
     },
     /// 공백 개념쌍
@@ -82,7 +83,7 @@ enum Command {
         min_works: usize,
         #[arg(long, default_value_t = 2)]
         min_level: u8,
-        #[arg(long, default_value_t = 0.4)]
+        #[arg(long, default_value_t = 0.4, value_parser = parse_min_score)]
         min_score: f64,
     },
 }
@@ -145,9 +146,17 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
+/// 렌더링해서 stdout 에 쓴다. `| head` 처럼 읽는 쪽이 먼저 닫으면(Broken pipe) 정상 종료로 본다.
 fn print_rows<T: Report + Serialize>(rows: &[T], format: Format) -> anyhow::Result<()> {
-    print!("{}", render(rows, format)?);
-    Ok(())
+    let text = render(rows, format)?;
+    let mut stdout = std::io::stdout().lock();
+    match stdout
+        .write_all(text.as_bytes())
+        .and_then(|()| stdout.flush())
+    {
+        Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        other => Ok(other?),
+    }
 }
 
 /// `<data>/works.jsonl` 을 읽는다.

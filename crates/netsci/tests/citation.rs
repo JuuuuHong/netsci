@@ -30,6 +30,61 @@ fn pagerank_합은_1() {
 }
 
 #[test]
+fn pagerank_두_노드_정확값() {
+    // 0 → 1, 1 은 dangling. PR0 = 0.075 + 0.425·PR1, PR0 + PR1 = 1 을 풀면 PR0 = 1/2.85
+    let ranks = pagerank(&[vec![1], vec![]]);
+    assert!((ranks[0] - 1.0 / 2.85).abs() < EPS, "{ranks:?}");
+    assert!((ranks[1] - 1.85 / 2.85).abs() < EPS, "{ranks:?}");
+}
+
+/// 명세 §5.3 식을 한 번 적용한다 (구현과 독립적으로 테스트 안에서 다시 쓴다).
+fn pagerank_step(adjacency: &[Vec<usize>], rank: &[f64]) -> Vec<f64> {
+    let n = adjacency.len() as f64;
+    let d = 0.85;
+    let dangling: f64 = adjacency
+        .iter()
+        .zip(rank)
+        .filter(|(t, _)| t.is_empty())
+        .map(|(_, r)| r)
+        .sum();
+    let mut next = vec![(1.0 - d) / n + d * dangling / n; adjacency.len()];
+    for (u, targets) in adjacency.iter().enumerate() {
+        for &v in targets {
+            next[v] += d * rank[u] / targets.len() as f64;
+        }
+    }
+    next
+}
+
+#[test]
+fn pagerank_는_명세_식의_고정점에_수렴한다() {
+    // 여러 번 반복해야 수렴하는 비대칭 그래프 (dangling 노드 5 포함)
+    let adjacency = vec![
+        vec![1, 2, 3],
+        vec![2],
+        vec![0, 4],
+        vec![4, 5],
+        vec![1],
+        vec![],
+    ];
+    let ranks = pagerank(&adjacency);
+    let next = pagerank_step(&adjacency, &ranks);
+    let residual: f64 = ranks.iter().zip(&next).map(|(a, b)| (a - b).abs()).sum();
+    assert!(residual < 1e-9, "고정점이 아니다: 잔차 {residual}");
+    assert!((sum(&ranks) - 1.0).abs() < EPS);
+
+    // 한두 번 반복한 값과는 확실히 달라야 한다 (반복 횟수가 망가지면 실패)
+    let uniform = vec![1.0 / 6.0; 6];
+    let one_step = pagerank_step(&adjacency, &uniform);
+    let diff: f64 = ranks
+        .iter()
+        .zip(&one_step)
+        .map(|(a, b)| (a - b).abs())
+        .sum();
+    assert!(diff > 1e-3, "1회 반복 결과와 거의 같다: {diff}");
+}
+
+#[test]
 fn pagerank_3노드_순환은_모두_3분의_1() {
     let ranks = pagerank(&[vec![1], vec![2], vec![0]]);
     for r in ranks {

@@ -20,6 +20,19 @@ impl Default for ConceptFilter {
     }
 }
 
+/// `--min-score` 인자 파서. OpenAlex score 범위인 0~1 의 유한한 수만 받는다.
+/// `NaN` 은 `f64` 로는 파싱되지만 모든 비교가 거짓이라 필터가 전부를 버리므로 거부한다.
+pub fn parse_min_score(value: &str) -> Result<f64, String> {
+    let score: f64 = value
+        .trim()
+        .parse()
+        .map_err(|_| format!("`{value}` 는 수가 아니다"))?;
+    if !(0.0..=1.0).contains(&score) {
+        return Err(format!("`{value}` 는 0 이상 1 이하여야 한다"));
+    }
+    Ok(score)
+}
+
 impl ConceptFilter {
     /// 경계값(`==`)은 통과한다.
     pub fn accepts(&self, concept: &Concept) -> bool {

@@ -90,13 +90,16 @@ impl Concept {
     }
 }
 
-/// `works` 를 JSONL 로 쓴다.
+/// `works` 를 JSONL 로 쓴다. 임시 파일에 다 쓴 뒤 rename 하므로 도중에 끊겨도
+/// 기존 파일이 잘린 채로 남지 않는다.
 pub fn write_jsonl(path: &Path, works: &[Work]) -> Result<(), CorpusError> {
     let io_err = |source| CorpusError::Io {
         path: path.to_path_buf(),
         source,
     };
-    let mut out = BufWriter::new(File::create(path).map_err(io_err)?);
+    let tmp = path.with_extension("jsonl.tmp");
+    let file = File::create(&tmp).map_err(io_err)?;
+    let mut out = BufWriter::new(file);
     for work in works {
         serde_json::to_writer(&mut out, work).map_err(|source| CorpusError::Serialize {
             path: path.to_path_buf(),
@@ -104,7 +107,9 @@ pub fn write_jsonl(path: &Path, works: &[Work]) -> Result<(), CorpusError> {
         })?;
         out.write_all(b"\n").map_err(io_err)?;
     }
-    out.flush().map_err(io_err)
+    let file = out.into_inner().map_err(|e| io_err(e.into_error()))?;
+    file.sync_all().map_err(io_err)?;
+    std::fs::rename(&tmp, path).map_err(io_err)
 }
 
 /// JSONL 을 읽는다. 빈 줄은 건너뛴다.

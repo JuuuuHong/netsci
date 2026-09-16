@@ -47,8 +47,17 @@ pub fn render<T: Report + serde::Serialize>(
     }
 }
 
+/// 행을 셀 문자열로 바꾼다. 직접 구현한 `Report` 가 헤더와 다른 수의 셀을 내더라도
+/// 표와 CSV 가 같은 모양이 되도록 헤더 수에 맞춰 모자라면 빈 칸을 채우고 남으면 버린다.
 fn cells<T: Report>(rows: &[T]) -> Vec<Vec<String>> {
-    rows.iter().map(Report::row).collect()
+    let width = T::headers().len();
+    rows.iter()
+        .map(|r| {
+            let mut row = r.row();
+            row.resize(width, String::new());
+            row
+        })
+        .collect()
 }
 
 /// 열마다 최대 폭(문자 수)으로 왼쪽 정렬한 고정폭 표. 헤더 아래 `-` 구분선.

@@ -37,6 +37,36 @@ struct Raw {
     r#type: &'static str,
 }
 
+/// `macro_rules!` 로 넘긴 타입은 `Type::Group` 이 된다.
+macro_rules! row_with_type {
+    ($name:ident, $ty:ty) => {
+        #[derive(Report, Serialize)]
+        struct $name {
+            value: $ty,
+        }
+    };
+}
+row_with_type!(MacroOption, Option<i32>);
+
+#[derive(Report, Serialize)]
+struct ParenOption {
+    #[allow(unused_parens)]
+    value: (Option<i32>),
+}
+
+/// 계약을 어긴 수동 구현: 헤더는 2개인데 셀 수가 행마다 다르다.
+#[derive(Serialize)]
+struct Ragged(Vec<&'static str>);
+
+impl Report for Ragged {
+    fn headers() -> Vec<&'static str> {
+        vec!["a", "b"]
+    }
+    fn row(&self) -> Vec<String> {
+        self.0.iter().map(|s| s.to_string()).collect()
+    }
+}
+
 fn gap(rank: usize, a: &str, lift: f64) -> GapRow {
     GapRow {
         rank,
@@ -141,4 +171,21 @@ fn json_은_유효한_배열() {
 
     let empty: [GapRow; 0] = [];
     assert_eq!(render(&empty, Format::Json).unwrap().trim(), "[]");
+}
+
+#[test]
+fn derive_매크로_그룹과_괄호로_감싼_option_도_인식한다() {
+    assert_eq!(MacroOption { value: None }.row(), [""]);
+    assert_eq!(MacroOption { value: Some(3) }.row(), ["3"]);
+    assert_eq!(ParenOption { value: None }.row(), [""]);
+}
+
+#[test]
+fn 셀_수가_헤더와_달라도_표와_csv_가_같은_모양이다() {
+    let rows = [Ragged(vec!["1", "2", "extra"]), Ragged(vec!["3"])];
+    assert_eq!(render(&rows, Format::Csv).unwrap(), "a,b\n1,2\n3,\n");
+    assert_eq!(
+        render(&rows, Format::Table).unwrap(),
+        "a  b\n-  -\n1  2\n3\n"
+    );
 }

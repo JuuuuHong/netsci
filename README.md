@@ -58,8 +58,16 @@ docker run --rm -v "$PWD/data:/app/data" netsci fetch --query "lithium metal ano
 docker run --rm -v "$PWD/data:/app/data" netsci gaps --data data/li-anode --top 20
 ```
 
-컨테이너는 uid 10001 로 실행됩니다. Linux 에서 호스트 `data/` 에 쓰기 권한이 없으면
-`--user "$(id -u):$(id -g)"` 를 붙이세요.
+위 명령은 macOS·Windows 의 Docker Desktop 기준입니다. 컨테이너는 비루트(uid 10001)로 실행되는데,
+**Linux** 에서는 바인드 마운트한 `data/` 가 호스트 사용자(또는 없을 때 자동 생성되면 root) 소유라
+그대로 실행하면 `data/li-anode/raw: 입출력 실패 … Permission denied` 로 실패합니다.
+Linux 에서는 디렉터리를 먼저 만들고 호스트 사용자로 실행하세요:
+
+```
+mkdir -p data
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/data:/app/data" netsci fetch --query "lithium metal anode" --limit 2000 --data data/li-anode
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/data:/app/data" netsci gaps --data data/li-anode --top 20
+```
 
 > 같은 `--data` 디렉터리에 다른 `--query`/`--filter`/`--limit` 으로 `fetch` 하면 캐시가 섞이지 않도록 에러로 중단합니다.
 > 그래서 아래 실행 결과는 위 예시와 다른 디렉터리를 씁니다.

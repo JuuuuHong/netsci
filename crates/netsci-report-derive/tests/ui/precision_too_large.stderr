@@ -1,0 +1,5 @@
+error: `precision` must be an integer between 0 and 65535
+ --> tests/ui/precision_too_large.rs:5:26
+  |
+5 |     #[report(precision = 100000)]
+  |                          ^^^^^^

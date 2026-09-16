@@ -1,7 +1,7 @@
 //! 개념 필터·동시출현 그래프·공백 탐지 테스트.
 
 use netsci::commands;
-use netsci::concept::{ConceptFilter, ConceptGraph};
+use netsci::concept::{ConceptFilter, ConceptGraph, parse_min_score};
 use netsci::corpus::{Concept, Work};
 use netsci::gaps::find_gaps;
 
@@ -177,4 +177,14 @@ fn gaps_명령_행과_stats_개념_수() {
     );
     assert_eq!(rows[0].rank, 1);
     assert_eq!(commands::stats(&works).concepts, 4);
+}
+
+#[test]
+fn min_score_인자는_0_이상_1_이하의_유한한_수만_받는다() {
+    assert_eq!(parse_min_score("0.4"), Ok(0.4));
+    assert_eq!(parse_min_score("0"), Ok(0.0));
+    assert_eq!(parse_min_score("1"), Ok(1.0));
+    for bad in ["NaN", "nan", "inf", "-0.1", "1.01", "abc", ""] {
+        assert!(parse_min_score(bad).is_err(), "{bad} 를 받아들였다");
+    }
 }

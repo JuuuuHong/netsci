@@ -58,13 +58,23 @@ pub enum FetchError {
         path: PathBuf,
         source: std::io::Error,
     },
+    #[error(
+        "{path}: 캐시 페이지는 있는데 {QUERY_FILE} 이 없어 어떤 질의의 캐시인지 알 수 없다. {RAW_DIR}/ 를 지우거나 다른 --data 디렉터리를 쓰라"
+    )]
+    OrphanCache { path: PathBuf },
     #[error("{path}: JSON 처리 실패")]
     Json {
         path: PathBuf,
         source: serde_json::Error,
     },
-    #[error("{path}: `results` 배열이 없어 works 페이지가 아니다")]
-    NotWorksPage { path: PathBuf },
+    #[error("{path}: works 페이지 JSON 이 아니다{hint}")]
+    BadPage {
+        path: PathBuf,
+        /// 캐시 파일이면 지우고 다시 실행하라는 안내, 새 응답이면 빈 문자열
+        hint: &'static str,
+        #[source]
+        source: Option<serde_json::Error>,
+    },
     #[error(transparent)]
     OpenAlex(#[from] OpenAlexError),
     #[error(transparent)]
@@ -101,16 +111,26 @@ pub async fn fetch<C: WorksClient>(
         let (page, low_budget) = if tokio::fs::try_exists(&path).await.unwrap_or(false) {
             summary.cached_pages += 1;
             let body = read_string(&path).await?;
-            (parse_page(&path, &body)?, false)
+            (parse_page(&path, &body, CACHED_PAGE_HINT)?, false)
         } else {
             let request = PageRequest {
                 query: params.query.clone(),
                 filter: params.filter.clone(),
                 cursor: cursor.clone(),
             };
-            let fetched = client.fetch_page(&request).await?;
+            let fetched = match client.fetch_page(&request).await {
+                Ok(fetched) => fetched,
+                // 한도가 이미 소진된 경우도 지금까지 받은 페이지로 works.jsonl 을 쓴다.
+                // 여기서 에러로 끝내면 --limit 을 줄여 다시 실행해도 query.json 불일치로 막힌다.
+                Err(err @ OpenAlexError::BudgetExhausted { .. }) => {
+                    eprintln!("경고: {err}. 지금까지 받은 페이지로 works.jsonl 을 쓴다");
+                    summary.stopped_by_budget = true;
+                    break;
+                }
+                Err(err) => return Err(err.into()),
+            };
             // 검증을 통과한 본문만 캐시한다. 깨진 본문이 캐시되면 이후 실행이 전부 그 파일에 막힌다.
-            let page = parse_page(&path, &fetched.body)?;
+            let page = parse_page(&path, &fetched.body, "")?;
             write_atomic(&path, &fetched.body).await?;
             summary.fetched_pages += 1;
             summary.cost_usd += fetched.cost_usd.unwrap_or(0.0);
@@ -151,22 +171,25 @@ pub async fn fetch<C: WorksClient>(
     Ok(summary)
 }
 
-/// 페이지 본문을 파싱한다. `results` 배열이 없는 JSON(에러 응답 등)은 works 페이지가 아니므로 거부한다.
-fn parse_page(path: &Path, body: &str) -> Result<WorksPage, FetchError> {
-    let json_err = |source| FetchError::Json {
+/// 캐시 페이지 파싱 실패 시 붙이는 안내.
+const CACHED_PAGE_HINT: &str = " (캐시 파일을 지우고 다시 실행하라)";
+
+/// 페이지 본문을 파싱한다. `results` 키가 없는 JSON(에러 응답 등)은 works 페이지가 아니므로 거부한다.
+/// `results: null` 은 모델(`WorksPage`)과 같게 빈 페이지로 받아들인다.
+fn parse_page(path: &Path, body: &str, hint: &'static str) -> Result<WorksPage, FetchError> {
+    let bad_page = |source| FetchError::BadPage {
         path: path.to_path_buf(),
+        hint,
         source,
     };
-    let value: serde_json::Value = serde_json::from_str(body).map_err(json_err)?;
-    if !value
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|e| bad_page(Some(e)))?;
+    let has_results = value
         .get("results")
-        .is_some_and(serde_json::Value::is_array)
-    {
-        return Err(FetchError::NotWorksPage {
-            path: path.to_path_buf(),
-        });
+        .is_some_and(|r| r.is_array() || r.is_null());
+    if !has_results {
+        return Err(bad_page(None));
     }
-    serde_json::from_value(value).map_err(json_err)
+    serde_json::from_value(value).map_err(|e| bad_page(Some(e)))
 }
 
 /// `limit` 에서 자른 뒤 id 기준으로 중복을 제거한다 (처음 나온 것을 남긴다).
@@ -178,11 +201,18 @@ pub fn truncate_and_dedup(mut works: Vec<Work>, limit: usize) -> Vec<Work> {
 }
 
 /// `query.json` 이 없으면 쓰고, 있으면 인자가 같은지 확인한다.
-/// 인자가 달라도 캐시된 페이지가 하나도 없으면 섞일 캐시가 없으므로 새 인자로 덮어쓴다
-/// (예: 오타 난 filter 로 첫 요청이 실패한 뒤 고쳐서 다시 실행).
+/// - 인자가 달라도 캐시된 페이지가 하나도 없으면 섞일 캐시가 없으므로 새 인자로 덮어쓴다
+///   (예: 오타 난 filter 로 첫 요청이 실패한 뒤 고쳐서 다시 실행).
+/// - `query.json` 없이 캐시 페이지만 있으면 어느 질의의 것인지 모르므로 에러.
 async fn check_or_write_query(data_dir: &Path, params: &FetchParams) -> Result<(), FetchError> {
     let path = data_dir.join(QUERY_FILE);
-    if tokio::fs::try_exists(&path).await.unwrap_or(false) {
+    if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
+        if has_cached_pages(&data_dir.join(RAW_DIR)).await? {
+            return Err(FetchError::OrphanCache {
+                path: data_dir.to_path_buf(),
+            });
+        }
+    } else {
         let text = read_string(&path).await?;
         let existing: FetchParams =
             serde_json::from_str(&text).map_err(|source| FetchError::Json {
