@@ -3,7 +3,7 @@
 > OpenAlex 논문 메타데이터로 **인용 네트워크**와 **개념 동시출현 네트워크**를 만들고,
 > "각자는 자주 등장하는데 기대보다 함께 등장하지 않는 개념 쌍"을 찾고, 그 결과를 원자료로 검증하는 Rust CLI.
 
-이 문서는 구현자(LLM 포함)가 **추가 질문 없이** 작업할 수 있도록 쓴 명세다.
+이 문서는 구현자가 **추가 질문 없이** 작업할 수 있도록 쓴 명세다.
 명세와 다르게 해야 할 이유가 생기면 임의로 바꾸지 말고 `docs/decisions.md` 에 기록한 뒤 진행한다(§9).
 
 ---
@@ -100,7 +100,7 @@ GET https://api.openalex.org/works
     &filter=<optional, 예: publication_year:2018-2024,cited_by_count:>20>
     &per-page=200
     &cursor=*                     # 다음 페이지부터는 meta.next_cursor 값
-    &select=id,display_name,publication_year,cited_by_count,referenced_works,concepts,abstract_inverted_index
+    &select=id,display_name,publication_year,cited_by_count,referenced_works,concepts,topics,abstract_inverted_index
     &api_key=<OPENALEX_API_KEY>   # 환경변수가 있을 때만 붙인다
 ```
 
@@ -132,6 +132,7 @@ x-ratelimit-remaining-usd: 0.099
 | `cited_by_count` | int | 전체 피인용수 (코퍼스 밖 포함) |
 | `referenced_works` | string[] | 인용 그래프 간선. 정규화 필요 |
 | `concepts[]` | `{ id, display_name, level(0~5), score(0~1) }` | 개념 그래프 |
+| `topics[]` | `{ id, display_name, score, subfield, field, domain }` (작품당 최대 3개) | **기본 분류 그래프.** OpenAlex 가 2024 년 concepts 를 폐기 예정으로 돌리고 권장하는 분류 |
 | `abstract_inverted_index` | `{ 단어: [위치…] }` \| null | 초록. 위치 순으로 복원해 `Work.abstract` 로 저장 (§5.5 검증용) |
 
 **⚠️ `concepts` 에는 동음이의어 오분류가 섞여 있다.** 실제 응답 예:
@@ -157,12 +158,12 @@ netsci fetch --query "lithium metal anode" \
 동작:
 1. `<data>/raw/page-0000.json`, `page-0001.json` … 순서로 **이미 있으면 파일을 읽고, 없으면 호출해서 저장**한다.
    다음 cursor 는 직전 페이지 파일의 `meta.next_cursor` 에서 얻는다. → 중간에 끊겨도 다시 실행하면 이어서 받는다
-2. `<data>/query.json` 에 `{query, filter, limit, schema}` 를 저장한다. `schema` 는 캐시 페이지의 필드 구성 버전(현재 2 = 초록 포함, 필드가 없는 옛 파일은 1)이다. **이미 있는데 인자가 다르면 에러로 중단**한다 (다른 질의의 캐시가 섞이는 것을 막는다)
+2. `<data>/query.json` 에 `{query, filter, limit, schema}` 를 저장한다. `schema` 는 캐시 페이지의 필드 구성 버전(2 = 초록 포함, 현재 3 = 토픽 포함, 필드가 없는 옛 파일은 1)이다. **이미 있는데 인자가 다르면 에러로 중단**한다 (다른 질의의 캐시가 섞이는 것을 막는다)
 3. 수집한 결과를 `limit` 에서 자르고 id 로 중복 제거해 `<data>/works.jsonl` 로 쓴다 (한 줄에 `Work` 하나)
-4. 출력: 받은 페이지 수(캐시 적중 / 새 호출), 작품 수, 누적 비용(USD)
+4. 출력: 받은 페이지 수(캐시 적중 / 새 호출), 작품 수, 누적 비용(USD), 한도 중단 여부, id 중복으로 버린 수(`duplicates`), 마지막 페이지의 `meta.count`(`reported_total`). 여러 날에 걸쳐 이어받으면 검색 결과 순서가 바뀌어 중복·누락이 생길 수 있으므로 이 두 값으로 확인한다
 
 ### 4.2 `netsci stats`
-코퍼스 개요: 작품 수, 연도 범위, **코퍼스 내부 인용 간선 수**, 전체 `referenced_works` 대비 내부 비율, 필터 후 고유 개념 수, 초록이 있는 작품 수.
+코퍼스 개요: 작품 수, 연도 범위, **코퍼스 내부 인용 간선 수**, 전체 `referenced_works` 대비 내부 비율, 필터 후 고유 토픽 수와 concept 수, 초록이 있는 작품 수.
 
 > 내부 비율을 굳이 출력하는 이유: 수집한 논문끼리의 인용만 그래프가 되므로 그래프가 얼마나 성긴지 사용자가 알아야 한다.
 
@@ -184,6 +185,12 @@ netsci fetch --query "lithium metal anode" \
 
 > 추가 이유(2026-09-17): 공백 후보 상위가 태깅 누락의 부산물이라는 것을 사례 몇 개가 아니라 모든 후보에 대해 수치로 보이기 위해서다.
 
+### 4.7 `netsci evidence --a "개념 A" --b "개념 B" [--limit 30] [--alias ...]`
+두 표현이 제목·초록에 함께 나오는 논문 표본. 해당 논문이 `limit` 보다 많으면 번호 순으로 고르게 건너뛰며 뽑는다(결정적).
+열: `rank`, `id`, `year`, `tag_a`, `tag_b`, `title`, `snippet_a`, `snippet_b`, `total`, `url`, `label`(빈 칸 — 사람이 초록을 읽고 채운다)
+
+> 추가 이유(2026-09-17): verify 의 `co_mentioned` 가 실제로 "함께 다룸" 인지 사람이 표본을 읽어 정확도를 매기기 위해서다. 문자열 공존은 비교·부정 문장("unlike …")도 센다.
+
 ---
 
 ## 5. 알고리즘
@@ -193,9 +200,11 @@ netsci fetch --query "lithium metal anode" \
 - 자기 인용 간선과 중복 간선은 제거
 - 표현: `Vec<Vec<usize>>` 인접 리스트 + `HashMap<String, usize>` id 인덱스
 
-### 5.2 개념 필터
-논문별로 `level >= min_level && score >= min_score` 인 개념만 남긴다. 기본값 `2`, `0.4`.
-- level 0~1 은 `Chemistry`, `Materials science` 처럼 너무 일반적이라 모든 쌍을 연결해 버린다
+### 5.2 분류 필터
+`concepts`·`gaps`·`verify`·`evidence` 는 `--taxonomy topics|concepts` 로 분류를 고른다. 기본은 **topics**.
+- topics: `score >= min_score` 인 토픽만 남긴다 (level 없음). 기본 `0.4`
+- concepts: `level >= min_level && score >= min_score`. 기본 `2`, `0.4`. level 0~1 은 `Chemistry` 처럼 너무 일반적이라 모든 쌍을 연결해 버린다
+- concepts 는 OpenAlex 가 더 이상 관리하지 않는 분류라 **비교용**으로만 남긴다 (동음이의어 오분류 재현)
 
 ### 5.3 PageRank (직접 구현)
 - 감쇠계수 `d = 0.85`, 수렴 조건 L1 변화량 `< 1e-10` 또는 최대 100회 반복
@@ -226,7 +235,7 @@ PR_new[v] = (1 - d)/N  +  d * ( Σ_{u→v} PR[u]/outdeg(u)  +  dangling_sum/N )
 - 개념 표현 = 표시 이름에서 끝의 괄호 한정어를 뗀 것(`Lithium (medication)` → `lithium`) + `--alias` 로 준 표현. 같은 정규화를 거친 `" 표현 "` 이 텍스트에 부분 문자열로 있으면 일치 (단어 경계 일치)
 - `text_a`/`text_b` = 표현이 나오는 논문 수, `text_observed` = 둘 다 나오는 논문 수
 - 이름 일치는 개념 판정이 아니다 (`lithium` 은 약물과 금속을 구분하지 못한다). 검증은 "태그 공존 0 이 텍스트에서도 0 인가" 를 보는 용도이며 README 한계에 적는다
-- 초록이 없는 작품은 제목만 쓴다
+- **모수는 초록이 있는 작품만.** 제목만 있는 작품은 표현이 걸릴 확률 자체가 낮아 텍스트 기대값을 체계적으로 낮추므로 뺀다
 - `text_expected = text_a × text_b / N`. 판정: `text_expected < 3.0` 이면 `unverifiable`(표현이 본문에 드물어 판정 불가 — 별칭 필요), 아니면 `text_observed == 0` 이면 `absent_in_text`, 그 밖은 `co_mentioned`. 하한 3.0 은 §5.4 와 같은 이유
 
 ---
@@ -332,6 +341,9 @@ impl ::netsci_report::Report for GapRow {
 | 개념 필터 | level·score 경계값 (`==` 포함) |
 | gaps | 손으로 만든 코퍼스 10건에서 observed/expected/lift 값을 손계산과 대조, `expected < 3` 쌍 제외, 정렬 순서 |
 | render | Table 정렬, CSV 이스케이프(쉼표·따옴표·개행), JSON 유효성 |
+| topics | 픽스처 topics 파싱(계층 포함), 필드 누락 토픽 제거, 기본 분류가 topics, score 경계, 분류별 그래프 |
+| evidence | 초록 있는 논문만, 태그 여부, 고른 표본 추출, 비 ASCII 스니펫 경계 |
+| CLI 끝단 | 빌드된 바이너리 실행: stats JSON, CSV 이스케이프, `--taxonomy`, 잘못된 인자 종료 코드 2, 코퍼스 없음 안내 |
 | verify | 손으로 만든 코퍼스에서 text_a/text_b/text_observed 손계산 대조, 단어 경계(`binders` ≠ `binder`), 괄호 한정어 제거, 별칭, 초록 역색인 복원, 옛 스키마 캐시 거부 |
 | 매크로 | §6.4 |
 
@@ -375,7 +387,6 @@ impl ::netsci_report::Report for GapRow {
    - OpenAlex concepts 오분류 (`Lithium (medication)` 실례)
    - `lift` 가 낮다고 연구 가치가 있다는 뜻은 아니다 — 단지 후보일 뿐
    - 개념 표기 정규화 없음, 표 출력의 한글 폭 미고려
-7. 개발 방식 — LLM 을 활용해 구현했고, 설계·검증·결정 기록은 직접 했다는 사실을 한두 줄로 명시
 
 ---
 

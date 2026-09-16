@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::openalex::{ApiConcept, ApiWork, normalize_id, reconstruct_abstract};
+use crate::openalex::{ApiConcept, ApiTopic, ApiWork, normalize_id, reconstruct_abstract};
 
 /// 코퍼스 파일 이름.
 pub const WORKS_FILE: &str = "works.jsonl";
@@ -22,7 +22,11 @@ pub struct Work {
     pub cited_by_count: u64,
     /// 정규화된 참조 작품 id
     pub referenced_works: Vec<String>,
+    /// OpenAlex concepts (폐기 예정 분류, 비교용으로 유지)
     pub concepts: Vec<Concept>,
+    /// OpenAlex topics (현재 권장 분류). 토픽 수집 전(스키마 3 미만) 코퍼스는 비어 있다
+    #[serde(default)]
+    pub topics: Vec<Topic>,
     /// 초록 원문. 초록이 없는 작품이나 초록 수집 전(스키마 1) 코퍼스는 `None`
     #[serde(rename = "abstract", default)]
     pub abstract_text: Option<String>,
@@ -36,6 +40,18 @@ pub struct Concept {
     pub name: String,
     pub level: u8,
     pub score: f64,
+}
+
+/// 작품에 붙은 토픽.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Topic {
+    /// `T10281` 형태
+    pub id: String,
+    pub name: String,
+    pub score: f64,
+    pub subfield: Option<String>,
+    pub field: Option<String>,
+    pub domain: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -77,6 +93,7 @@ impl Work {
                 .into_iter()
                 .filter_map(Concept::from_api)
                 .collect(),
+            topics: api.topics.into_iter().filter_map(Topic::from_api).collect(),
             abstract_text: api
                 .abstract_inverted_index
                 .as_ref()
@@ -93,6 +110,20 @@ impl Concept {
             name: api.display_name?,
             level: api.level?,
             score: api.score?,
+        })
+    }
+}
+
+impl Topic {
+    /// id·이름·score 중 하나라도 없으면 필터에 쓸 수 없으므로 버린다.
+    pub fn from_api(api: ApiTopic) -> Option<Self> {
+        Some(Self {
+            id: normalize_id(api.id.as_deref()?),
+            name: api.display_name?,
+            score: api.score?,
+            subfield: api.subfield.and_then(|n| n.display_name),
+            field: api.field.and_then(|n| n.display_name),
+            domain: api.domain.and_then(|n| n.display_name),
         })
     }
 }

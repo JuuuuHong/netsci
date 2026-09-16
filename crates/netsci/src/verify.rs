@@ -148,6 +148,20 @@ impl ConceptTerms {
     }
 }
 
+/// 검증 대상 텍스트. 초록이 있는 작품만 모수로 쓴다 — 제목만 있는 작품은 표현이 걸릴 확률 자체가
+/// 낮아 텍스트 기대값을 체계적으로 낮추기 때문이다. 반환값은 (작품 번호, 정규화된 제목+초록).
+fn corpus_texts(works: &[Work]) -> Vec<(usize, String)> {
+    works
+        .iter()
+        .enumerate()
+        .filter_map(|(i, w)| {
+            let abs = w.abstract_text.as_deref()?;
+            let title = w.title.as_deref().unwrap_or("");
+            Some((i, normalize(&format!("{title} {abs}"))))
+        })
+        .collect()
+}
+
 /// 공백 개념쌍 상위 `top` 개를 텍스트로 검증한다.
 ///
 /// 비용: 후보 쌍에 등장하는 개념 C 개 × 논문 N 편만큼 부분 문자열 검색을 한다.
@@ -162,17 +176,7 @@ pub fn verify_gaps(
     let graph = ConceptGraph::build(works, filter);
     let gaps: Vec<Gap> = find_gaps(&graph, min_works).into_iter().take(top).collect();
 
-    let texts: Vec<String> = works
-        .iter()
-        .map(|w| {
-            let mut t = w.title.clone().unwrap_or_default();
-            if let Some(abs) = &w.abstract_text {
-                t.push(' ');
-                t.push_str(abs);
-            }
-            normalize(&t)
-        })
-        .collect();
+    let texts = corpus_texts(works);
 
     // 개념별로 텍스트에 나오는 논문 번호 집합을 한 번만 만든다 (정렬된 벡터).
     let mut hits: HashMap<u32, Vec<usize>> = HashMap::new();
@@ -182,15 +186,15 @@ pub fn verify_gaps(
                 let terms = ConceptTerms::new(&graph.names[concept as usize], aliases);
                 texts
                     .iter()
-                    .enumerate()
                     .filter(|(_, t)| terms.matches(t))
-                    .map(|(i, _)| i)
+                    .map(|(i, _)| *i)
                     .collect()
             });
         }
     }
 
-    let n = works.len().max(1) as f64;
+    // 모수는 초록이 있는 작품 수. 0 이면 기대값이 0 이 되어 전부 판정 불가로 나온다.
+    let n = texts.len().max(1) as f64;
     let empty = Vec::new();
     let verified = gaps
         .into_iter()
@@ -210,6 +214,85 @@ pub fn verify_gaps(
         })
         .collect();
     (graph, verified)
+}
+
+/// 두 개념 표현이 함께 나온 논문 한 편 — 사람이 초록을 읽고 정확도를 매기기 위한 표본.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Evidence {
+    /// 입력 `works` 에서의 위치
+    pub work_index: usize,
+    /// 필터를 통과한 분류 태그에 A 가 붙어 있는지
+    pub tag_a: bool,
+    pub tag_b: bool,
+    /// 정규화된 텍스트에서 첫 일치 주변
+    pub snippet_a: String,
+    pub snippet_b: String,
+    /// 두 표현이 함께 나온 논문 수 (표본 추출 전)
+    pub total: usize,
+}
+
+/// 표본에서 일치 앞뒤로 보여 줄 글자 수.
+const SNIPPET_RADIUS: usize = 60;
+
+/// 제목·초록에 A 와 B 표현이 모두 나오는 논문을 최대 `limit` 편 뽑는다.
+/// 해당 논문이 더 많으면 번호 순으로 고르게 건너뛰며 뽑아 결과가 결정적이다.
+pub fn evidence(
+    works: &[Work],
+    filter: &ConceptFilter,
+    a: &str,
+    b: &str,
+    aliases: &[Alias],
+    limit: usize,
+) -> Vec<Evidence> {
+    let (terms_a, terms_b) = (ConceptTerms::new(a, aliases), ConceptTerms::new(b, aliases));
+    let hits: Vec<(usize, String)> = corpus_texts(works)
+        .into_iter()
+        .filter(|(_, t)| terms_a.matches(t) && terms_b.matches(t))
+        .collect();
+    let total = hits.len();
+    let picked: Vec<&(usize, String)> = if total <= limit {
+        hits.iter().collect()
+    } else {
+        (0..limit).map(|k| &hits[k * total / limit]).collect()
+    };
+    let tagged = |work: &Work, name: &str| {
+        filter
+            .apply(work)
+            .iter()
+            .any(|l| l.name.eq_ignore_ascii_case(name))
+    };
+    picked
+        .into_iter()
+        .map(|(i, text)| Evidence {
+            work_index: *i,
+            tag_a: tagged(&works[*i], a),
+            tag_b: tagged(&works[*i], b),
+            snippet_a: snippet(text, &terms_a),
+            snippet_b: snippet(text, &terms_b),
+            total,
+        })
+        .collect()
+}
+
+/// 표현 중 텍스트에 가장 먼저 나오는 것의 주변을 자른다.
+fn snippet(text: &str, terms: &ConceptTerms) -> String {
+    let Some(pos) = terms
+        .terms
+        .iter()
+        .filter_map(|t| text.find(t.as_str()))
+        .min()
+    else {
+        return String::new();
+    };
+    let mut start = pos.saturating_sub(SNIPPET_RADIUS);
+    while !text.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut end = (pos + SNIPPET_RADIUS * 2).min(text.len());
+    while !text.is_char_boundary(end) {
+        end += 1;
+    }
+    format!("…{}…", text[start..end].trim())
 }
 
 /// 정렬된 두 벡터의 교집합 크기.

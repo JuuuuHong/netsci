@@ -29,8 +29,8 @@ pub struct FetchParams {
     pub schema: u32,
 }
 
-/// 현재 캐시 스키마. 2 = 초록(`abstract_inverted_index`) 포함.
-pub const FETCH_SCHEMA: u32 = 2;
+/// 현재 캐시 스키마. 2 = 초록(`abstract_inverted_index`) 포함, 3 = 토픽(`topics`) 포함.
+pub const FETCH_SCHEMA: u32 = 3;
 
 fn legacy_schema() -> u32 {
     1
@@ -52,6 +52,10 @@ pub struct FetchSummary {
     pub cost_usd: f64,
     /// 남은 한도 부족으로 도중에 멈췄는지
     pub stopped_by_budget: bool,
+    /// `limit` 안에서 id 중복으로 버린 작품 수. 여러 날에 걸쳐 이어받으면 순서 변동으로 늘 수 있다
+    pub duplicates: usize,
+    /// 마지막으로 읽은 페이지의 `meta.count` (조건에 맞는 전체 작품 수)
+    pub reported_total: Option<u64>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -151,6 +155,9 @@ pub async fn fetch<C: WorksClient>(
             (page, low)
         };
 
+        if page.meta.count.is_some() {
+            summary.reported_total = page.meta.count;
+        }
         let is_empty = page.results.is_empty();
         collected.extend(page.results.into_iter().filter_map(Work::from_api));
 
@@ -174,8 +181,10 @@ pub async fn fetch<C: WorksClient>(
         index += 1;
     }
 
+    let kept = collected.len().min(params.limit);
     let works = truncate_and_dedup(collected, params.limit);
     summary.works = works.len();
+    summary.duplicates = kept - works.len();
     summary.pages = summary.cached_pages + summary.fetched_pages;
     let works_path = data_dir.join(WORKS_FILE);
     corpus::write_jsonl(&works_path, &works)?;

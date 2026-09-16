@@ -45,6 +45,8 @@ pub struct ApiWork {
     pub referenced_works: Vec<String>,
     #[serde(default, deserialize_with = "null_default")]
     pub concepts: Vec<ApiConcept>,
+    #[serde(default, deserialize_with = "null_default")]
+    pub topics: Vec<ApiTopic>,
     /// 단어 → 등장 위치 목록. OpenAlex 는 저작권 때문에 초록을 이 형태로만 준다.
     #[serde(default)]
     pub abstract_inverted_index: Option<HashMap<String, Vec<usize>>>,
@@ -61,6 +63,30 @@ pub struct ApiConcept {
     pub level: Option<u8>,
     #[serde(default)]
     pub score: Option<f64>,
+}
+
+/// 작품에 붙은 토픽 (OpenAlex 가 2024 년 concepts 대신 도입한 분류). 작품마다 최대 3개.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ApiTopic {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub score: Option<f64>,
+    #[serde(default)]
+    pub subfield: Option<ApiNamed>,
+    #[serde(default)]
+    pub field: Option<ApiNamed>,
+    #[serde(default)]
+    pub domain: Option<ApiNamed>,
+}
+
+/// 이름만 쓰는 상위 분류 (하위 분야 · 분야 · 영역).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ApiNamed {
+    #[serde(default)]
+    pub display_name: Option<String>,
 }
 
 /// `https://openalex.org/W123` → `W123`. 접두사가 없으면 그대로 둔다.
@@ -107,7 +133,7 @@ pub const WORKS_URL: &str = "https://api.openalex.org/works";
 /// 한 페이지 크기. 최대값을 써서 호출 횟수(=비용)를 줄인다.
 pub const PER_PAGE: u32 = 200;
 /// 요청할 필드.
-pub const SELECT_FIELDS: &str = "id,display_name,publication_year,cited_by_count,referenced_works,concepts,abstract_inverted_index";
+pub const SELECT_FIELDS: &str = "id,display_name,publication_year,cited_by_count,referenced_works,concepts,topics,abstract_inverted_index";
 /// 남은 일일 한도가 이 값(USD) 미만이면 중단한다.
 pub const MIN_REMAINING_USD: f64 = 0.01;
 /// 429/5xx 최대 재시도 횟수.

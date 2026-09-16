@@ -195,6 +195,7 @@ fn limit_에서_자른_뒤_중복을_제거한다() {
         referenced_works: vec![],
         concepts: vec![],
         abstract_text: None,
+        topics: vec![],
     };
     let works = vec![work("W1"), work("W1"), work("W2"), work("W3")];
     let ids: Vec<_> = fetch::truncate_and_dedup(works, 3)
@@ -425,5 +426,34 @@ async fn 스키마가_다른_옛_캐시와_섞이지_않는다() {
         other => panic!("{other}"),
     }
     assert!(client.requests.is_empty());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+async fn 요약에_중복_제거_수와_전체_작품_수를_남긴다() {
+    let dir = temp_dir("summary-counts");
+    let mut client = FakeClient::default();
+    let page = |ids: &[&str], cursor: Option<&str>| {
+        let results: Vec<_> = ids
+            .iter()
+            .map(|id| serde_json::json!({"id": format!("https://openalex.org/{id}")}))
+            .collect();
+        serde_json::json!({"meta": {"count": 5, "next_cursor": cursor}, "results": results})
+            .to_string()
+    };
+    // 두 번째 페이지에 첫 페이지의 W2 가 다시 나온다 (날짜를 넘겨 이어받을 때 생길 수 있는 순서 변동)
+    client
+        .responses
+        .push_back(Ok(fetched(page(&["W1", "W2"], Some("c1")), 0.001, 0.09)));
+    client
+        .responses
+        .push_back(Ok(fetched(page(&["W2", "W3", "W4"], None), 0.001, 0.09)));
+
+    let summary = fetch::fetch(&mut client, &dir, &params("q", 100))
+        .await
+        .unwrap();
+    assert_eq!(summary.works, 4);
+    assert_eq!(summary.duplicates, 1);
+    assert_eq!(summary.reported_total, Some(5));
     std::fs::remove_dir_all(&dir).unwrap();
 }

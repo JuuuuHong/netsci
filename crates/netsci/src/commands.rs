@@ -7,7 +7,7 @@ use crate::citation::{CitationGraph, pagerank};
 use crate::concept::{ConceptFilter, ConceptGraph};
 use crate::corpus::Work;
 use crate::gaps::find_gaps;
-use crate::verify::{Alias, verify_gaps};
+use crate::verify::{Alias, evidence as find_evidence, verify_gaps};
 
 /// 제목을 자를 글자 수.
 pub const TITLE_WIDTH: usize = 60;
@@ -23,7 +23,9 @@ pub struct StatsRow {
     /// 내부 간선 / 전체 참조 (참조가 없으면 0)
     #[report(precision = 4)]
     pub internal_ratio: f64,
-    /// 기본 필터(§5.2) 통과 후 고유 개념 수
+    /// 기본 필터(§5.2) 통과 후 고유 토픽 수
+    pub topics: usize,
+    /// 기본 필터(§5.2) 통과 후 고유 concept 수 (폐기 예정 분류, 비교용)
     pub concepts: usize,
     /// 초록이 있는 작품 수 (`verify` 의 텍스트 검증 범위)
     pub abstracts: usize,
@@ -54,7 +56,8 @@ pub struct VerifyRow {
 pub struct ConceptRow {
     pub rank: usize,
     pub concept: String,
-    pub level: u8,
+    /// concepts 만 값이 있다
+    pub level: Option<u8>,
     pub works: u32,
     pub strength: u64,
     pub top_neighbor: Option<String>,
@@ -103,7 +106,8 @@ pub fn stats(works: &[Work]) -> StatsRow {
         } else {
             internal_edges as f64 / total_references as f64
         },
-        concepts: ConceptGraph::build(works, &ConceptFilter::default()).concept_count(),
+        topics: ConceptGraph::build(works, &ConceptFilter::default()).concept_count(),
+        concepts: ConceptGraph::build(works, &ConceptFilter::concepts()).concept_count(),
         abstracts: works.iter().filter(|w| w.abstract_text.is_some()).count(),
     }
 }
@@ -213,6 +217,55 @@ pub fn verify(
             text_expected: v.text_expected,
             text_observed: v.text_observed,
             verdict: v.verdict.to_string(),
+        })
+        .collect()
+}
+
+/// `netsci evidence` 한 행. `label` 칸은 사람이 초록을 읽고 채운다 (예: `같이 다룸` / `비교·부정` / `무관`).
+#[derive(Debug, Clone, PartialEq, Report, Serialize)]
+pub struct EvidenceRow {
+    pub rank: usize,
+    pub id: String,
+    pub year: Option<i32>,
+    /// A 태그가 붙어 있는지
+    pub tag_a: bool,
+    pub tag_b: bool,
+    pub title: String,
+    pub snippet_a: String,
+    pub snippet_b: String,
+    /// 두 표현이 함께 나온 논문 수 (표본 추출 전)
+    pub total: usize,
+    pub url: String,
+    pub label: String,
+}
+
+/// 두 개념 표현이 제목·초록에 함께 나오는 논문 표본.
+pub fn evidence(
+    works: &[Work],
+    filter: &ConceptFilter,
+    a: &str,
+    b: &str,
+    aliases: &[Alias],
+    limit: usize,
+) -> Vec<EvidenceRow> {
+    find_evidence(works, filter, a, b, aliases, limit)
+        .into_iter()
+        .enumerate()
+        .map(|(i, e)| {
+            let work = &works[e.work_index];
+            EvidenceRow {
+                rank: i + 1,
+                id: work.id.clone(),
+                year: work.year,
+                tag_a: e.tag_a,
+                tag_b: e.tag_b,
+                title: truncate_chars(work.title.as_deref().unwrap_or(""), TITLE_WIDTH),
+                snippet_a: e.snippet_a,
+                snippet_b: e.snippet_b,
+                total: e.total,
+                url: format!("https://openalex.org/{}", work.id),
+                label: String::new(),
+            }
         })
         .collect()
 }

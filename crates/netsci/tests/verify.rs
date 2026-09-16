@@ -28,6 +28,7 @@ fn work(id: usize, tags: &[&str], title: Option<&str>, abstract_text: Option<&st
         referenced_works: vec![],
         concepts: tags.iter().map(|t| concept(t)).collect(),
         abstract_text: abstract_text.map(str::to_string),
+        topics: vec![],
     }
 }
 
@@ -35,10 +36,10 @@ const B: &str = "Binder (biology)";
 
 /// 태그는 concept_gaps 테스트의 손계산 코퍼스와 같다 (A=8, B=6, C=5, D=4 → 1위 쌍 B-C, observed 1, expected 3.0).
 ///
-/// 텍스트 (제목 + 초록):
-/// - `binder` 가 단어로 나오는 논문: W1 W3 W5 W6 → 4편 (W4 의 `binders` 는 다른 단어)
-/// - `cathode` 가 나오는 논문: W3 W4 W5 → 3편, 별칭 `positive electrode` 를 더하면 W6 까지 4편
-/// - 둘 다: W3 W5 → 2편, 별칭을 더하면 W6 까지 3편
+/// 텍스트 검증 모수는 초록이 있는 W1 W3 W4 W6 (4편). W5 는 제목에 두 단어가 다 있지만 초록이 없어 빠진다.
+/// - `binder` 가 단어로 나오는 논문: W1 W3 W6 → 3편 (W4 의 `binders` 는 다른 단어)
+/// - `cathode` 가 나오는 논문: W3 W4 → 2편, 별칭 `positive electrode` 를 더하면 W6 까지 3편
+/// - 둘 다: W3 → 1편, 별칭을 더하면 W6 까지 2편
 fn corpus() -> Vec<Work> {
     vec![
         work(1, &["Anode", B, "Dendrite"], None, Some("anode binder")),
@@ -61,16 +62,16 @@ fn corpus() -> Vec<Work> {
 
 #[test]
 fn 텍스트_공존을_손계산과_대조한다() {
-    let (graph, rows) = verify_gaps(&corpus(), &ConceptFilter::default(), 3, 1, &[]);
+    let (graph, rows) = verify_gaps(&corpus(), &ConceptFilter::concepts(), 3, 1, &[]);
     assert_eq!(rows.len(), 1);
     let v = &rows[0];
     assert_eq!(graph.names[v.gap.a as usize], B);
     assert_eq!(graph.names[v.gap.b as usize], "Cathode");
     assert_eq!(v.gap.observed, 1, "태그 기준 공존은 W6 하나");
     assert!((v.gap.expected - 3.0).abs() < 1e-12);
-    assert_eq!((v.text_a, v.text_b, v.text_observed), (4, 3, 2));
-    // 텍스트 기대 공존 4 × 3 / 10 = 1.2 < 3 → 판정 불가
-    assert!((v.text_expected - 1.2).abs() < 1e-12);
+    assert_eq!((v.text_a, v.text_b, v.text_observed), (3, 2, 1));
+    // 텍스트 기대 공존 3 × 2 / 4(초록 있는 논문) = 1.5 < 3 → 판정 불가
+    assert!((v.text_expected - 1.5).abs() < 1e-12);
     assert_eq!(v.verdict, Verdict::Unverifiable);
 }
 
@@ -94,23 +95,23 @@ fn 판정은_gaps_와_같은_기대값_하한을_쓴다() {
 #[test]
 fn 별칭을_더하면_그_표현도_센다() {
     let alias = parse_alias("cathode = positive electrode").unwrap();
-    let (_, rows) = verify_gaps(&corpus(), &ConceptFilter::default(), 3, 1, &[alias]);
+    let (_, rows) = verify_gaps(&corpus(), &ConceptFilter::concepts(), 3, 1, &[alias]);
     assert_eq!(
         (rows[0].text_a, rows[0].text_b, rows[0].text_observed),
-        (4, 4, 3)
+        (3, 3, 2)
     );
 }
 
 #[test]
 fn verify_명령_행() {
-    let rows = commands::verify(&corpus(), &ConceptFilter::default(), 3, 2, &[]);
+    let rows = commands::verify(&corpus(), &ConceptFilter::concepts(), 3, 2, &[]);
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].rank, 1);
     assert_eq!(
         (rows[0].concept_a.as_str(), rows[0].concept_b.as_str()),
         (B, "Cathode")
     );
-    assert_eq!((rows[0].tag_observed, rows[0].text_observed), (1, 2));
+    assert_eq!((rows[0].tag_observed, rows[0].text_observed), (1, 1));
     assert_eq!(
         commands::stats(&corpus()).abstracts,
         4,
@@ -222,4 +223,72 @@ fn api_응답의_초록이_work_로_옮겨진다() {
             .unwrap()
             .contains(r#""abstract":"Lithium anodes""#)
     );
+}
+
+#[test]
+fn evidence_는_초록에_두_표현이_모두_나오는_논문만_뽑는다() {
+    let rows = commands::evidence(&corpus(), &ConceptFilter::concepts(), B, "Cathode", &[], 30);
+    // 초록 있는 논문 중 binder·cathode 가 모두 나오는 것은 W3 뿐 (W5 는 초록이 없다)
+    assert_eq!(rows.len(), 1);
+    let r = &rows[0];
+    assert_eq!((r.id.as_str(), r.total), ("W3", 1));
+    assert_eq!(
+        (r.tag_a, r.tag_b),
+        (true, false),
+        "W3 에는 Binder 태그만 있다"
+    );
+    assert!(
+        r.snippet_a.contains("binder") && r.snippet_b.contains("cathode"),
+        "{r:?}"
+    );
+    assert_eq!(r.url, "https://openalex.org/W3");
+    assert!(r.label.is_empty(), "label 은 사람이 채운다");
+
+    let alias = parse_alias("Cathode=positive electrode").unwrap();
+    let rows = commands::evidence(
+        &corpus(),
+        &ConceptFilter::concepts(),
+        B,
+        "Cathode",
+        &[alias],
+        30,
+    );
+    let ids: Vec<_> = rows.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(ids, ["W3", "W6"]);
+    assert_eq!((rows[1].tag_a, rows[1].tag_b), (true, true));
+}
+
+#[test]
+fn evidence_표본은_고르게_건너뛰며_결정적으로_뽑는다() {
+    let works: Vec<Work> = (0..10)
+        .map(|i| work(i, &[], None, Some("anode and cathode")))
+        .collect();
+    let rows = commands::evidence(
+        &works,
+        &ConceptFilter::concepts(),
+        "Anode",
+        "Cathode",
+        &[],
+        3,
+    );
+    let ids: Vec<_> = rows.iter().map(|r| r.id.as_str()).collect();
+    // 10편 중 3편: 0·3·6 번째 (k × 10 / 3)
+    assert_eq!(ids, ["W0", "W3", "W6"]);
+    assert!(rows.iter().all(|r| r.total == 10));
+}
+
+#[test]
+fn 비_ascii_텍스트에서도_스니펫이_글자_경계를_지킨다() {
+    let long = format!("{} anode {}", "가".repeat(80), "나".repeat(80));
+    let works = vec![work(1, &[], None, Some(&format!("{long} cathode")))];
+    let rows = commands::evidence(
+        &works,
+        &ConceptFilter::concepts(),
+        "Anode",
+        "Cathode",
+        &[],
+        5,
+    );
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].snippet_a.contains("anode"));
 }

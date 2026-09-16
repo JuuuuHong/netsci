@@ -2,11 +2,24 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::corpus::{Concept, Work};
+use crate::corpus::{Concept, Topic, Work};
 
-/// 개념 필터 (§5.2). level 0~1 은 너무 일반적이라 모든 쌍을 연결해 버리므로 기본으로 거른다.
+/// 어떤 OpenAlex 분류로 그래프를 만들지.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Taxonomy {
+    /// OpenAlex 가 권장하는 현재 분류. 작품마다 최대 3개, level 이 없다
+    #[default]
+    Topics,
+    /// 폐기 예정인 옛 분류. 동음이의어 오분류 비교용으로 남긴다
+    Concepts,
+}
+
+/// 분류 필터 (§5.2).
+/// concepts 는 level 0~1 이 너무 일반적이라 모든 쌍을 연결해 버리므로 `min_level` 로 거른다.
+/// topics 에는 level 이 없어 `min_score` 만 적용한다.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ConceptFilter {
+    pub taxonomy: Taxonomy,
     pub min_level: u8,
     pub min_score: f64,
 }
@@ -14,10 +27,20 @@ pub struct ConceptFilter {
 impl Default for ConceptFilter {
     fn default() -> Self {
         Self {
+            taxonomy: Taxonomy::Topics,
             min_level: 2,
             min_score: 0.4,
         }
     }
+}
+
+/// 그래프 노드가 되는 분류 항목 하나 (concept 또는 topic).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Label<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    /// concepts 만 level 이 있다
+    pub level: Option<u8>,
 }
 
 /// `--min-score` 인자 파서. OpenAlex score 범위인 0~1 의 유한한 수만 받는다.
@@ -34,18 +57,49 @@ pub fn parse_min_score(value: &str) -> Result<f64, String> {
 }
 
 impl ConceptFilter {
+    /// 기본 문턱값으로 concepts 를 쓰는 필터.
+    pub fn concepts() -> Self {
+        Self {
+            taxonomy: Taxonomy::Concepts,
+            ..Self::default()
+        }
+    }
+
     /// 경계값(`==`)은 통과한다.
     pub fn accepts(&self, concept: &Concept) -> bool {
         concept.level >= self.min_level && concept.score >= self.min_score
     }
 
-    /// 작품의 개념 중 필터를 통과한 것만. 같은 id 가 두 번 붙어 있으면 처음 것만 남긴다.
-    pub fn apply<'a>(&self, work: &'a Work) -> Vec<&'a Concept> {
+    /// 토픽은 score 만 본다. 경계값(`==`)은 통과한다.
+    pub fn accepts_topic(&self, topic: &Topic) -> bool {
+        topic.score >= self.min_score
+    }
+
+    /// 작품의 분류 항목 중 필터를 통과한 것만. 같은 id 가 두 번 붙어 있으면 처음 것만 남긴다.
+    pub fn apply<'a>(&self, work: &'a Work) -> Vec<Label<'a>> {
         let mut seen = HashSet::new();
-        work.concepts
-            .iter()
-            .filter(|c| self.accepts(c) && seen.insert(c.id.as_str()))
-            .collect()
+        match self.taxonomy {
+            Taxonomy::Concepts => work
+                .concepts
+                .iter()
+                .filter(|c| self.accepts(c) && seen.insert(c.id.as_str()))
+                .map(|c| Label {
+                    id: &c.id,
+                    name: &c.name,
+                    level: Some(c.level),
+                })
+                .collect(),
+            Taxonomy::Topics => work
+                .topics
+                .iter()
+                .filter(|t| self.accepts_topic(t) && seen.insert(t.id.as_str()))
+                .map(|t| Label {
+                    id: &t.id,
+                    name: &t.name,
+                    level: None,
+                })
+                .collect(),
+        }
     }
 }
 
@@ -58,8 +112,8 @@ pub struct ConceptGraph {
     pub ids: Vec<String>,
     /// 개념 번호 → 표시 이름 (처음 본 것)
     pub names: Vec<String>,
-    /// 개념 번호 → level (처음 본 것)
-    pub levels: Vec<u8>,
+    /// 개념 번호 → level (처음 본 것, topics 는 `None`)
+    pub levels: Vec<Option<u8>>,
     /// 개념 id → 개념 번호
     pub index: HashMap<String, u32>,
     /// 개념 번호 → 등장 논문 수
@@ -94,15 +148,15 @@ impl ConceptGraph {
         graph
     }
 
-    fn intern(&mut self, concept: &Concept) -> u32 {
-        if let Some(&n) = self.index.get(&concept.id) {
+    fn intern(&mut self, label: Label<'_>) -> u32 {
+        if let Some(&n) = self.index.get(label.id) {
             return n;
         }
         let n = self.ids.len() as u32;
-        self.index.insert(concept.id.clone(), n);
-        self.ids.push(concept.id.clone());
-        self.names.push(concept.name.clone());
-        self.levels.push(concept.level);
+        self.index.insert(label.id.to_string(), n);
+        self.ids.push(label.id.to_string());
+        self.names.push(label.name.to_string());
+        self.levels.push(label.level);
         self.works.push(0);
         n
     }

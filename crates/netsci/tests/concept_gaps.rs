@@ -29,6 +29,7 @@ fn work(id: usize, names: &[&str]) -> Work {
         referenced_works: vec![],
         concepts,
         abstract_text: None,
+        topics: vec![],
     }
 }
 
@@ -63,7 +64,7 @@ fn hand_corpus() -> Vec<Work> {
 
 #[test]
 fn 개념_필터_경계값() {
-    let filter = ConceptFilter::default();
+    let filter = ConceptFilter::concepts();
     assert!(
         filter.accepts(&concept("x", 2, 0.4)),
         "level·score 모두 == 이면 통과"
@@ -73,6 +74,7 @@ fn 개념_필터_경계값() {
     assert!(!filter.accepts(&concept("x", 2, 0.399_999)));
 
     let custom = ConceptFilter {
+        taxonomy: netsci::concept::Taxonomy::Concepts,
         min_level: 3,
         min_score: 0.7,
     };
@@ -85,7 +87,7 @@ fn 개념_필터_경계값() {
 fn 같은_개념이_두_번_붙어도_한_번만_센다() {
     let mut w = work(1, &["A", "B"]);
     w.concepts.push(concept("A", 2, 0.8));
-    let graph = ConceptGraph::build(&[w], &ConceptFilter::default());
+    let graph = ConceptGraph::build(&[w], &ConceptFilter::concepts());
     assert_eq!(graph.concept_count(), 2);
     assert_eq!(graph.works, vec![1, 1]);
     assert_eq!(graph.observed(0, 1), 1);
@@ -93,7 +95,7 @@ fn 같은_개념이_두_번_붙어도_한_번만_센다() {
 
 #[test]
 fn 동시출현_그래프_가중치() {
-    let graph = ConceptGraph::build(&hand_corpus(), &ConceptFilter::default());
+    let graph = ConceptGraph::build(&hand_corpus(), &ConceptFilter::concepts());
     assert_eq!(graph.n_works, 10);
     assert_eq!(graph.concept_count(), 4, "Chemistry·Noise 는 걸러진다");
     let id = |n: &str| graph.index[&format!("C-{n}")];
@@ -115,7 +117,7 @@ fn 동시출현_그래프_가중치() {
 
 #[test]
 fn gaps_손계산과_일치하고_정렬된다() {
-    let graph = ConceptGraph::build(&hand_corpus(), &ConceptFilter::default());
+    let graph = ConceptGraph::build(&hand_corpus(), &ConceptFilter::concepts());
     let gaps = find_gaps(&graph, 3);
     let name = |c: u32| graph.names[c as usize].as_str();
 
@@ -142,7 +144,7 @@ fn gaps_손계산과_일치하고_정렬된다() {
 
 #[test]
 fn gaps_min_works_미만_개념은_후보가_아니다() {
-    let graph = ConceptGraph::build(&hand_corpus(), &ConceptFilter::default());
+    let graph = ConceptGraph::build(&hand_corpus(), &ConceptFilter::concepts());
     let gaps = find_gaps(&graph, 5);
     let name = |c: u32| graph.names[c as usize].as_str();
     let pairs: Vec<_> = gaps.iter().map(|g| (name(g.a), name(g.b))).collect();
@@ -151,18 +153,18 @@ fn gaps_min_works_미만_개념은_후보가_아니다() {
 
 #[test]
 fn gaps_빈_코퍼스() {
-    let graph = ConceptGraph::build(&[], &ConceptFilter::default());
+    let graph = ConceptGraph::build(&[], &ConceptFilter::concepts());
     assert!(find_gaps(&graph, 0).is_empty());
 }
 
 #[test]
 fn concepts_명령_행() {
-    let rows = commands::concepts(&hand_corpus(), &ConceptFilter::default(), 2);
+    let rows = commands::concepts(&hand_corpus(), &ConceptFilter::concepts(), 2);
     assert_eq!(rows.len(), 2);
     // strength: A 13, B 6+1+2=9, C 3+1+2=6, D 8
     assert_eq!((rows[0].concept.as_str(), rows[0].strength), ("A", 13));
     assert_eq!((rows[1].concept.as_str(), rows[1].strength), ("B", 9));
-    assert_eq!(rows[0].level, 2);
+    assert_eq!(rows[0].level, Some(2));
     assert_eq!(rows[0].works, 8);
     assert_eq!(rows[0].top_neighbor.as_deref(), Some("B"));
 }
@@ -170,7 +172,7 @@ fn concepts_명령_행() {
 #[test]
 fn gaps_명령_행과_stats_개념_수() {
     let works = hand_corpus();
-    let rows = commands::gaps(&works, &ConceptFilter::default(), 3, 1);
+    let rows = commands::gaps(&works, &ConceptFilter::concepts(), 3, 1);
     assert_eq!(rows.len(), 1);
     assert_eq!(
         (rows[0].concept_a.as_str(), rows[0].concept_b.as_str()),
