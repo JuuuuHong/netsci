@@ -28,6 +28,7 @@ fn work(id: usize, names: &[&str]) -> Work {
         cited_by_count: 0,
         referenced_works: vec![],
         concepts,
+        abstract_text: None,
     }
 }
 

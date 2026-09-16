@@ -14,6 +14,7 @@ fn work(id: &str, refs: &[&str]) -> Work {
         cited_by_count: 0,
         referenced_works: refs.iter().map(|r| r.to_string()).collect(),
         concepts: vec![],
+        abstract_text: None,
     }
 }
 

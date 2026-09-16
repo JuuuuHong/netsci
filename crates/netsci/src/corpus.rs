@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::openalex::{ApiConcept, ApiWork, normalize_id};
+use crate::openalex::{ApiConcept, ApiWork, normalize_id, reconstruct_abstract};
 
 /// 코퍼스 파일 이름.
 pub const WORKS_FILE: &str = "works.jsonl";
@@ -23,6 +23,9 @@ pub struct Work {
     /// 정규화된 참조 작품 id
     pub referenced_works: Vec<String>,
     pub concepts: Vec<Concept>,
+    /// 초록 원문. 초록이 없는 작품이나 초록 수집 전(스키마 1) 코퍼스는 `None`
+    #[serde(rename = "abstract", default)]
+    pub abstract_text: Option<String>,
 }
 
 /// 작품에 붙은 개념.
@@ -74,6 +77,10 @@ impl Work {
                 .into_iter()
                 .filter_map(Concept::from_api)
                 .collect(),
+            abstract_text: api
+                .abstract_inverted_index
+                .as_ref()
+                .and_then(reconstruct_abstract),
         })
     }
 }

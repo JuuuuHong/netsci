@@ -7,6 +7,7 @@ use crate::citation::{CitationGraph, pagerank};
 use crate::concept::{ConceptFilter, ConceptGraph};
 use crate::corpus::Work;
 use crate::gaps::find_gaps;
+use crate::verify::{Alias, verify_gaps};
 
 /// 제목을 자를 글자 수.
 pub const TITLE_WIDTH: usize = 60;
@@ -24,6 +25,24 @@ pub struct StatsRow {
     pub internal_ratio: f64,
     /// 기본 필터(§5.2) 통과 후 고유 개념 수
     pub concepts: usize,
+    /// 초록이 있는 작품 수 (`verify` 의 텍스트 검증 범위)
+    pub abstracts: usize,
+}
+
+/// `netsci verify` 한 행.
+#[derive(Debug, Clone, PartialEq, Report, Serialize)]
+pub struct VerifyRow {
+    pub rank: usize,
+    pub concept_a: String,
+    pub concept_b: String,
+    #[report(precision = 2)]
+    pub expected: f64,
+    /// 두 개념 태그가 함께 붙은 논문 수 (gaps 의 observed)
+    pub tag_observed: u32,
+    /// 제목·초록에 두 개념 표현이 함께 나오는 논문 수
+    pub text_observed: u32,
+    pub text_a: u32,
+    pub text_b: u32,
 }
 
 /// `netsci concepts` 한 행.
@@ -81,6 +100,7 @@ pub fn stats(works: &[Work]) -> StatsRow {
             internal_edges as f64 / total_references as f64
         },
         concepts: ConceptGraph::build(works, &ConceptFilter::default()).concept_count(),
+        abstracts: works.iter().filter(|w| w.abstract_text.is_some()).count(),
     }
 }
 
@@ -162,6 +182,31 @@ pub fn gaps(works: &[Work], filter: &ConceptFilter, min_works: usize, top: usize
             observed: g.observed,
             expected: g.expected,
             lift: g.lift,
+        })
+        .collect()
+}
+
+/// 공백 개념쌍 상위 `top` 개를 제목·초록 텍스트로 검증한 행.
+pub fn verify(
+    works: &[Work],
+    filter: &ConceptFilter,
+    min_works: usize,
+    top: usize,
+    aliases: &[Alias],
+) -> Vec<VerifyRow> {
+    let (graph, verified) = verify_gaps(works, filter, min_works, top, aliases);
+    verified
+        .into_iter()
+        .enumerate()
+        .map(|(i, v)| VerifyRow {
+            rank: i + 1,
+            concept_a: graph.names[v.gap.a as usize].clone(),
+            concept_b: graph.names[v.gap.b as usize].clone(),
+            expected: v.gap.expected,
+            tag_observed: v.gap.observed,
+            text_observed: v.text_observed,
+            text_a: v.text_a,
+            text_b: v.text_b,
         })
         .collect()
 }

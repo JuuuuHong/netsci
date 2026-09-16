@@ -8,8 +8,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use netsci::commands;
 use netsci::concept::{ConceptFilter, parse_min_score};
 use netsci::corpus::{self, WORKS_FILE, Work};
-use netsci::fetch::{self, FetchParams};
+use netsci::fetch::{self, FETCH_SCHEMA, FetchParams};
 use netsci::openalex::HttpClient;
+use netsci::verify::{Alias, parse_alias};
 use netsci_report::{Format, Report, render};
 use serde::Serialize;
 
@@ -86,6 +87,20 @@ enum Command {
         #[arg(long, default_value_t = 0.4, value_parser = parse_min_score)]
         min_score: f64,
     },
+    /// 공백 개념쌍을 제목·초록 텍스트 기준 공존과 대조한다
+    Verify {
+        #[arg(long, default_value_t = 20)]
+        top: usize,
+        #[arg(long, default_value_t = 15)]
+        min_works: usize,
+        #[arg(long, default_value_t = 2)]
+        min_level: u8,
+        #[arg(long, default_value_t = 0.4, value_parser = parse_min_score)]
+        min_score: f64,
+        /// 개념의 추가 검색 표현. 여러 번 줄 수 있다 (예: "X-ray photoelectron spectroscopy=XPS")
+        #[arg(long = "alias", value_parser = parse_alias)]
+        aliases: Vec<Alias>,
+    },
 }
 
 #[tokio::main]
@@ -106,6 +121,7 @@ async fn main() -> anyhow::Result<()> {
                 query,
                 filter,
                 limit,
+                schema: FETCH_SCHEMA,
             };
             let summary = fetch::fetch(&mut client, &cli.data, &params).await?;
             print_rows(&[summary], format)
@@ -142,6 +158,28 @@ async fn main() -> anyhow::Result<()> {
                 min_score,
             };
             print_rows(&commands::gaps(&works, &filter, min_works, top), format)
+        }
+        Command::Verify {
+            top,
+            min_works,
+            min_level,
+            min_score,
+            aliases,
+        } => {
+            let works = load_works(&cli.data)?;
+            if !works.iter().any(|w| w.abstract_text.is_some()) {
+                eprintln!(
+                    "경고: 초록이 있는 작품이 없어 제목만으로 검증한다. 초록 수집 전(스키마 1) 코퍼스라면 새 --data 로 다시 fetch 하라"
+                );
+            }
+            let filter = ConceptFilter {
+                min_level,
+                min_score,
+            };
+            print_rows(
+                &commands::verify(&works, &filter, min_works, top, &aliases),
+                format,
+            )
         }
     }
 }

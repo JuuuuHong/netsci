@@ -7,3 +7,4 @@ pub mod corpus;
 pub mod fetch;
 pub mod gaps;
 pub mod openalex;
+pub mod verify;

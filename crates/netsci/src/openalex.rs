@@ -2,6 +2,7 @@
 //!
 //! OpenAlex 는 필드를 빼거나 `null` 로 보내는 경우가 있으므로 모든 필드를 관대하게 받는다.
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Deserializer};
@@ -44,6 +45,9 @@ pub struct ApiWork {
     pub referenced_works: Vec<String>,
     #[serde(default, deserialize_with = "null_default")]
     pub concepts: Vec<ApiConcept>,
+    /// 단어 → 등장 위치 목록. OpenAlex 는 저작권 때문에 초록을 이 형태로만 준다.
+    #[serde(default)]
+    pub abstract_inverted_index: Option<HashMap<String, Vec<usize>>>,
 }
 
 /// 작품에 붙은 개념.
@@ -64,6 +68,27 @@ pub fn normalize_id(raw: &str) -> String {
     raw.strip_prefix(OPENALEX_PREFIX).unwrap_or(raw).to_string()
 }
 
+/// 역색인 초록을 원문 순서의 문장으로 되돌린다. 비어 있거나 위치가 없으면 `None`.
+/// 위치가 비는 곳은 건너뛰고, 같은 위치에 단어가 여럿이면 사전순으로 마지막 것이 남는다.
+pub fn reconstruct_abstract(index: &HashMap<String, Vec<usize>>) -> Option<String> {
+    let mut words: Vec<&str> = index.keys().map(String::as_str).collect();
+    words.sort_unstable();
+    let len = index.values().flatten().max().map(|&m| m + 1)?;
+    // 극단적으로 큰 위치 값에 메모리를 잡지 않도록 실제 단어 수의 몇 배로 제한한다
+    let total: usize = index.values().map(Vec::len).sum();
+    if len > total.saturating_mul(4).max(1024) {
+        return None;
+    }
+    let mut slots: Vec<Option<&str>> = vec![None; len];
+    for word in words {
+        for &pos in &index[word] {
+            slots[pos] = Some(word);
+        }
+    }
+    let text = slots.into_iter().flatten().collect::<Vec<_>>().join(" ");
+    (!text.is_empty()).then_some(text)
+}
+
 /// 키가 없을 때뿐 아니라 값이 `null` 일 때도 기본값을 쓰게 한다.
 fn null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
@@ -82,8 +107,7 @@ pub const WORKS_URL: &str = "https://api.openalex.org/works";
 /// 한 페이지 크기. 최대값을 써서 호출 횟수(=비용)를 줄인다.
 pub const PER_PAGE: u32 = 200;
 /// 요청할 필드.
-pub const SELECT_FIELDS: &str =
-    "id,display_name,publication_year,cited_by_count,referenced_works,concepts";
+pub const SELECT_FIELDS: &str = "id,display_name,publication_year,cited_by_count,referenced_works,concepts,abstract_inverted_index";
 /// 남은 일일 한도가 이 값(USD) 미만이면 중단한다.
 pub const MIN_REMAINING_USD: f64 = 0.01;
 /// 429/5xx 최대 재시도 횟수.

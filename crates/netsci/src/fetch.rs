@@ -23,6 +23,17 @@ pub struct FetchParams {
     pub query: String,
     pub filter: Option<String>,
     pub limit: usize,
+    /// 캐시 페이지에 담긴 필드 구성의 버전. 필드가 바뀌면 옛 캐시와 섞이지 않도록 올린다.
+    /// 이 필드가 없는 옛 `query.json` 은 1 로 읽는다.
+    #[serde(default = "legacy_schema")]
+    pub schema: u32,
+}
+
+/// 현재 캐시 스키마. 2 = 초록(`abstract_inverted_index`) 포함.
+pub const FETCH_SCHEMA: u32 = 2;
+
+fn legacy_schema() -> u32 {
+    1
 }
 
 /// 수집 결과 요약.

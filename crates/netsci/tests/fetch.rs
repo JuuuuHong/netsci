@@ -37,6 +37,7 @@ fn params(query: &str, limit: usize) -> FetchParams {
         query: query.to_string(),
         filter: Some("publication_year:2018-2024".to_string()),
         limit,
+        schema: netsci::fetch::FETCH_SCHEMA,
     }
 }
 
@@ -193,6 +194,7 @@ fn limit_에서_자른_뒤_중복을_제거한다() {
         cited_by_count: 0,
         referenced_works: vec![],
         concepts: vec![],
+        abstract_text: None,
     };
     let works = vec![work("W1"), work("W1"), work("W2"), work("W3")];
     let ids: Vec<_> = fetch::truncate_and_dedup(works, 3)
@@ -399,5 +401,29 @@ fn works_jsonl_은_임시_파일_없이_교체된다() {
         .map(|e| e.unwrap().file_name())
         .collect();
     assert_eq!(leftovers, ["works.jsonl"]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+async fn 스키마가_다른_옛_캐시와_섞이지_않는다() {
+    let dir = temp_dir("schema");
+    std::fs::create_dir_all(dir.join("raw")).unwrap();
+    // 스키마 필드가 없는 옛 query.json (초록 수집 전)
+    std::fs::write(
+        dir.join("query.json"),
+        r#"{"query": "q", "filter": "publication_year:2018-2024", "limit": 100}"#,
+    )
+    .unwrap();
+    std::fs::write(page_path(&dir, 0), page_json(&["W1"], None)).unwrap();
+
+    let mut client = FakeClient::default();
+    let err = fetch::fetch(&mut client, &dir, &params("q", 100))
+        .await
+        .unwrap_err();
+    match err {
+        FetchError::QueryMismatch { existing, .. } => assert_eq!(existing.schema, 1),
+        other => panic!("{other}"),
+    }
+    assert!(client.requests.is_empty());
     std::fs::remove_dir_all(&dir).unwrap();
 }

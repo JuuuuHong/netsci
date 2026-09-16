@@ -100,7 +100,7 @@ GET https://api.openalex.org/works
     &filter=<optional, 예: publication_year:2018-2024,cited_by_count:>20>
     &per-page=200
     &cursor=*                     # 다음 페이지부터는 meta.next_cursor 값
-    &select=id,display_name,publication_year,cited_by_count,referenced_works,concepts
+    &select=id,display_name,publication_year,cited_by_count,referenced_works,concepts,abstract_inverted_index
     &api_key=<OPENALEX_API_KEY>   # 환경변수가 있을 때만 붙인다
 ```
 
@@ -132,6 +132,7 @@ x-ratelimit-remaining-usd: 0.099
 | `cited_by_count` | int | 전체 피인용수 (코퍼스 밖 포함) |
 | `referenced_works` | string[] | 인용 그래프 간선. 정규화 필요 |
 | `concepts[]` | `{ id, display_name, level(0~5), score(0~1) }` | 개념 그래프 |
+| `abstract_inverted_index` | `{ 단어: [위치…] }` \| null | 초록. 위치 순으로 복원해 `Work.abstract` 로 저장 (§5.5 검증용) |
 
 **⚠️ `concepts` 에는 동음이의어 오분류가 섞여 있다.** 실제 응답 예:
 리튬 금속 음극 논문에 `Lithium (medication)`(level 2), `Dendrite (mathematics)`(level 2) 가 붙어 있다.
@@ -156,12 +157,12 @@ netsci fetch --query "lithium metal anode" \
 동작:
 1. `<data>/raw/page-0000.json`, `page-0001.json` … 순서로 **이미 있으면 파일을 읽고, 없으면 호출해서 저장**한다.
    다음 cursor 는 직전 페이지 파일의 `meta.next_cursor` 에서 얻는다. → 중간에 끊겨도 다시 실행하면 이어서 받는다
-2. `<data>/query.json` 에 `{query, filter, limit}` 를 저장한다. **이미 있는데 인자가 다르면 에러로 중단**한다 (다른 질의의 캐시가 섞이는 것을 막는다)
+2. `<data>/query.json` 에 `{query, filter, limit, schema}` 를 저장한다. `schema` 는 캐시 페이지의 필드 구성 버전(현재 2 = 초록 포함, 필드가 없는 옛 파일은 1)이다. **이미 있는데 인자가 다르면 에러로 중단**한다 (다른 질의의 캐시가 섞이는 것을 막는다)
 3. 수집한 결과를 `limit` 에서 자르고 id 로 중복 제거해 `<data>/works.jsonl` 로 쓴다 (한 줄에 `Work` 하나)
 4. 출력: 받은 페이지 수(캐시 적중 / 새 호출), 작품 수, 누적 비용(USD)
 
 ### 4.2 `netsci stats`
-코퍼스 개요: 작품 수, 연도 범위, **코퍼스 내부 인용 간선 수**, 전체 `referenced_works` 대비 내부 비율, 필터 후 고유 개념 수.
+코퍼스 개요: 작품 수, 연도 범위, **코퍼스 내부 인용 간선 수**, 전체 `referenced_works` 대비 내부 비율, 필터 후 고유 개념 수, 초록이 있는 작품 수.
 
 > 내부 비율을 굳이 출력하는 이유: 수집한 논문끼리의 인용만 그래프가 되므로 그래프가 얼마나 성긴지 사용자가 알아야 한다.
 
@@ -176,6 +177,12 @@ netsci fetch --query "lithium metal anode" \
 ### 4.5 `netsci gaps --top 20 [--min-works 15] [--min-level 2] [--min-score 0.4]`
 공백 개념쌍 (§5.4).
 열: `rank`, `concept_a`, `concept_b`, `works_a`, `works_b`, `observed`, `expected`(소수 2자리), `lift`(소수 3자리)
+
+### 4.6 `netsci verify --top 20 [--min-works 15] [--min-level 2] [--min-score 0.4] [--alias "개념=표현"]...`
+공백 개념쌍 상위 N 개를 **제목·초록 텍스트 기준 공존**과 대조한다 (§5.5).
+열: `rank`, `concept_a`, `concept_b`, `expected`(소수 2자리), `tag_observed`, `text_observed`, `text_a`, `text_b`
+
+> 추가 이유(2026-09-17): 공백 후보 상위가 태깅 누락의 부산물이라는 것을 사례 몇 개가 아니라 모든 후보에 대해 수치로 보이기 위해서다.
 
 ---
 
@@ -212,6 +219,13 @@ PR_new[v] = (1 - d)/N  +  d * ( Σ_{u→v} PR[u]/outdeg(u)  +  dangling_sum/N )
 
 > **복잡도 메모.** 후보 개념이 K 개면 쌍은 K²/2. 동시출현 카운트는 논문마다 개념쌍을 세어 `HashMap<(u32,u32), u32>` 에 쌓고,
 > 후보 쌍 순회는 그 맵을 조회한다. K 가 수백 수준이라 전수 순회로 충분하다. 이 판단을 코드 주석에 남긴다.
+
+### 5.5 텍스트 검증
+- 텍스트 = 제목 + 초록. 소문자화하고 영숫자가 아닌 문자를 공백 하나로 접은 뒤 양끝에 공백을 둔다
+- 개념 표현 = 표시 이름에서 끝의 괄호 한정어를 뗀 것(`Lithium (medication)` → `lithium`) + `--alias` 로 준 표현. 같은 정규화를 거친 `" 표현 "` 이 텍스트에 부분 문자열로 있으면 일치 (단어 경계 일치)
+- `text_a`/`text_b` = 표현이 나오는 논문 수, `text_observed` = 둘 다 나오는 논문 수
+- 이름 일치는 개념 판정이 아니다 (`lithium` 은 약물과 금속을 구분하지 못한다). 검증은 "태그 공존 0 이 텍스트에서도 0 인가" 를 보는 용도이며 README 한계에 적는다
+- 초록이 없는 작품은 제목만 쓴다
 
 ---
 
@@ -316,6 +330,7 @@ impl ::netsci_report::Report for GapRow {
 | 개념 필터 | level·score 경계값 (`==` 포함) |
 | gaps | 손으로 만든 코퍼스 10건에서 observed/expected/lift 값을 손계산과 대조, `expected < 3` 쌍 제외, 정렬 순서 |
 | render | Table 정렬, CSV 이스케이프(쉼표·따옴표·개행), JSON 유효성 |
+| verify | 손으로 만든 코퍼스에서 text_a/text_b/text_observed 손계산 대조, 단어 경계(`binders` ≠ `binder`), 괄호 한정어 제거, 별칭, 초록 역색인 복원, 옛 스키마 캐시 거부 |
 | 매크로 | §6.4 |
 
 ---
