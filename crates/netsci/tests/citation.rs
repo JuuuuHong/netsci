@@ -1,0 +1,130 @@
+//! 인용 그래프와 PageRank 테스트.
+
+use netsci::citation::{CitationGraph, pagerank};
+use netsci::commands;
+use netsci::corpus::Work;
+
+const EPS: f64 = 1e-9;
+
+fn work(id: &str, refs: &[&str]) -> Work {
+    Work {
+        id: id.to_string(),
+        title: Some(format!("title {id}")),
+        year: Some(2020),
+        cited_by_count: 0,
+        referenced_works: refs.iter().map(|r| r.to_string()).collect(),
+        concepts: vec![],
+    }
+}
+
+fn sum(v: &[f64]) -> f64 {
+    v.iter().sum()
+}
+
+#[test]
+fn pagerank_합은_1() {
+    let adjacency = vec![vec![1, 2], vec![2], vec![0], vec![0, 2], vec![]];
+    let ranks = pagerank(&adjacency);
+    assert_eq!(ranks.len(), 5);
+    assert!((sum(&ranks) - 1.0).abs() < EPS, "합 = {}", sum(&ranks));
+}
+
+#[test]
+fn pagerank_3노드_순환은_모두_3분의_1() {
+    let ranks = pagerank(&[vec![1], vec![2], vec![0]]);
+    for r in ranks {
+        assert!((r - 1.0 / 3.0).abs() < EPS, "{r}");
+    }
+}
+
+#[test]
+fn pagerank_별_모양에서_중심이_최대() {
+    // 0 이 중심, 1~5 가 모두 0 을 인용
+    let mut adjacency = vec![vec![]];
+    adjacency.extend((1..=5).map(|_| vec![0]));
+    let ranks = pagerank(&adjacency);
+    assert!((sum(&ranks) - 1.0).abs() < EPS);
+    for leaf in &ranks[1..] {
+        assert!(ranks[0] > *leaf);
+        assert!((leaf - ranks[1]).abs() < EPS, "잎끼리는 같다");
+    }
+}
+
+#[test]
+fn pagerank_dangling_노드만_있으면_균등() {
+    let ranks = pagerank(&[vec![], vec![], vec![], vec![]]);
+    for r in ranks {
+        assert!((r - 0.25).abs() < EPS);
+    }
+}
+
+#[test]
+fn pagerank_빈_그래프는_빈_결과() {
+    assert!(pagerank(&[]).is_empty());
+}
+
+#[test]
+fn 인용_그래프는_코퍼스_밖_자기인용_중복을_제거한다() {
+    let works = vec![
+        work("W1", &["W2", "W2", "W1", "W999", "W3"]),
+        work("W2", &["W3", "W404"]),
+        work("W3", &[]),
+    ];
+    let graph = CitationGraph::build(&works);
+    assert_eq!(graph.node_count(), 3);
+    assert_eq!(graph.adjacency, vec![vec![1, 2], vec![2], vec![]]);
+    assert_eq!(graph.edge_count(), 3);
+    // W1: W2, W3, W999 (중복·자기 제외) + W2: W3, W404
+    assert_eq!(graph.total_references, 5);
+    assert_eq!(graph.in_degrees(), vec![0, 1, 2]);
+}
+
+#[test]
+fn 같은_id_는_한_노드로_합친다() {
+    let works = vec![
+        work("W1", &["W2"]),
+        work("W2", &[]),
+        work("W1", &["W3"]),
+        work("W3", &[]),
+    ];
+    let graph = CitationGraph::build(&works);
+    assert_eq!(graph.node_count(), 3);
+    assert_eq!(graph.adjacency[graph.index["W1"]], vec![1, 2]);
+}
+
+#[test]
+fn stats_는_내부_비율을_계산한다() {
+    let mut works = vec![work("W1", &["W2", "W999", "W998", "W997"]), work("W2", &[])];
+    works[1].year = Some(2018);
+    let stats = commands::stats(&works);
+    assert_eq!(stats.works, 2);
+    assert_eq!((stats.year_min, stats.year_max), (Some(2018), Some(2020)));
+    assert_eq!(stats.internal_edges, 1);
+    assert_eq!(stats.total_references, 4);
+    assert!((stats.internal_ratio - 0.25).abs() < EPS);
+    assert_eq!(commands::stats(&[]).internal_ratio, 0.0);
+}
+
+#[test]
+fn citations_는_pagerank_순으로_top_n_을_낸다() {
+    let works = vec![
+        work("W1", &["W3"]),
+        work("W2", &["W3"]),
+        work("W3", &[]),
+        work("W4", &["W3", "W1"]),
+    ];
+    let rows = commands::citations(&works, 2);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].rank, 1);
+    assert_eq!(rows[0].id, "W3");
+    assert_eq!(rows[0].in_corpus_citations, 3);
+    assert_eq!(rows[1].id, "W1");
+    assert!(rows[0].pagerank > rows[1].pagerank);
+}
+
+#[test]
+fn 제목은_문자_단위로_자른다() {
+    assert_eq!(commands::truncate_chars("abc", 3), "abc");
+    assert_eq!(commands::truncate_chars("abcd", 3), "ab…");
+    assert_eq!(commands::truncate_chars("리튬금속음극", 4), "리튬금…");
+}

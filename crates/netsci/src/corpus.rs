@@ -37,18 +37,18 @@ pub struct Concept {
 
 #[derive(Debug, thiserror::Error)]
 pub enum CorpusError {
-    #[error("{path}: 입출력 실패: {source}")]
+    #[error("{path}: 입출력 실패")]
     Io {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("{path}:{line}: JSON 파싱 실패: {source}")]
+    #[error("{path}:{line}: JSON 파싱 실패")]
     Parse {
         path: PathBuf,
         line: usize,
         source: serde_json::Error,
     },
-    #[error("{path}: JSON 직렬화 실패: {source}")]
+    #[error("{path}: JSON 직렬화 실패")]
     Serialize {
         path: PathBuf,
         source: serde_json::Error,

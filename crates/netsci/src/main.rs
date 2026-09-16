@@ -1,8 +1,11 @@
 //! CLI 진입점. clap 으로 인자를 파싱하고 해당 명령을 실행하기만 한다.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
+use netsci::commands;
+use netsci::corpus::{self, WORKS_FILE, Work};
 use netsci::fetch::{self, FetchParams};
 use netsci::openalex::HttpClient;
 
@@ -100,6 +103,47 @@ async fn main() -> anyhow::Result<()> {
             );
             Ok(())
         }
+        Command::Stats => {
+            let works = load_works(&cli.data)?;
+            let s = commands::stats(&works);
+            println!(
+                "works: {}, years: {:?}-{:?}, internal_edges: {}, total_references: {}, internal_ratio: {:.4}",
+                s.works,
+                s.year_min,
+                s.year_max,
+                s.internal_edges,
+                s.total_references,
+                s.internal_ratio
+            );
+            Ok(())
+        }
+        Command::Citations { top } => {
+            let works = load_works(&cli.data)?;
+            for r in commands::citations(&works, top) {
+                println!(
+                    "{}\t{}\t{}\t{:?}\t{:.6}\t{}\t{}",
+                    r.rank,
+                    r.id,
+                    r.title,
+                    r.year,
+                    r.pagerank,
+                    r.in_corpus_citations,
+                    r.cited_by_count
+                );
+            }
+            Ok(())
+        }
         other => anyhow::bail!("아직 구현되지 않은 명령: {other:?}"),
     }
+}
+
+/// `<data>/works.jsonl` 을 읽는다.
+fn load_works(data: &Path) -> anyhow::Result<Vec<Work>> {
+    let path = data.join(WORKS_FILE);
+    corpus::read_jsonl(&path).with_context(|| {
+        format!(
+            "코퍼스를 읽지 못했다. 먼저 `netsci fetch --data {}` 를 실행하라",
+            data.display()
+        )
+    })
 }

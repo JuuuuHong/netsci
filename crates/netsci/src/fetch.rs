@@ -49,12 +49,12 @@ pub enum FetchError {
         existing: Box<FetchParams>,
         requested: Box<FetchParams>,
     },
-    #[error("{path}: 입출력 실패: {source}")]
+    #[error("{path}: 입출력 실패")]
     Io {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("{path}: JSON 처리 실패: {source}")]
+    #[error("{path}: JSON 처리 실패")]
     Json {
         path: PathBuf,
         source: serde_json::Error,
