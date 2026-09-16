@@ -89,3 +89,18 @@
 - 선택지: 명세의 세 가지만 / 중복 키·정수가 아닌 precision 도 에러
 - 선택: 함께 에러
 - 이유: `#[report(rename = "a", rename = "b")]` 를 조용히 덮어쓰면 실수를 숨긴다. 명세의 compile-fail 3건은 그대로 두었다.
+
+## 2026-09-16 Docker 의존성 캐시는 `--mount=type=cache`
+- 선택지: `Cargo.toml`/`Cargo.lock` + 빈 `src` 선빌드 / BuildKit 캐시 마운트
+- 선택: 캐시 마운트
+- 이유: 크레이트 3개(proc-macro 포함) workspace 에서 빈 `src` 뼈대를 크레이트마다 만들고 지우는 방식은 깨지기 쉽고, 캐시 마운트는 증분 컴파일 산출물까지 재사용한다.
+
+## 2026-09-16 빌드 이미지를 `rust:1-slim-bookworm` 으로 고정
+- 선택지: 명세대로 `rust:1-slim` / `rust:1-slim-bookworm`
+- 선택: `rust:1-slim-bookworm`
+- 이유: 2026-09 기준 `rust:1-slim` 은 Debian 13(glibc 2.41)이고 실행 이미지 `debian:bookworm-slim` 은 glibc 2.36 이다. 지금은 동작하지만 더 새 glibc 심볼이 링크되는 순간 실행 이미지에서 깨진다. 같은 배포판으로 맞춘다.
+
+## 2026-09-16 Docker 빌드 컨텍스트에서 `rust-toolchain.toml` 제외
+- 선택지: 포함 / `.dockerignore` 로 제외
+- 선택: 제외
+- 이유: 포함하면 rustup 이 이미지에 이미 있는 툴체인 대신 `stable` 채널과 rustfmt·clippy 를 빌드마다 내려받는다. 로컬 개발에서만 채널을 고정하면 충분하다.

@@ -1,0 +1,8 @@
+# 빌드 산출물·수집 데이터·로컬 상태는 빌드 컨텍스트에서 뺀다
+target/
+data/
+.git/
+**/.omc/
+# rust:1-slim 에 이미 있는 툴체인을 쓰도록 한다.
+# 이 파일이 있으면 rustup 이 `stable` 채널과 rustfmt·clippy 를 새로 내려받는다.
+rust-toolchain.toml
