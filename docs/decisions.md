@@ -132,3 +132,8 @@
   - **테스트 보강**: PageRank 정확값·고정점 테스트, 로컬 TCP 서버로 `HttpClient` 재시도·한도·요청 간격 테스트(`tokio` 기능을 늘리지 않으려고 표준 라이브러리 `TcpListener` 사용, 요청 간격 기대값은 구현 상수 대신 명세 값 100ms 를 직접 적음). trybuild 는 명세의 3건에 새 에러 3건을 더했다.
   - **Linux Docker 권한**: 이미지는 명세대로 비루트로 두고, README 에 Linux 용 `--user "$(id -u):$(id -g)"` 명령을 따로 적었다 (명세의 사용 예는 그대로 유지).
     Docker Desktop(macOS) 바인드 마운트는 소유권을 바꿔 보여 주므로, Docker VM 의 Linux 파일시스템(named volume)에 uid 1000·755 디렉터리를 만들어 확인했다: 기본 실행(uid 10001)은 `Permission denied`, `--user 1000:1000` 은 성공, root 소유 디렉터리는 `--user` 로도 실패(그래서 `mkdir -p data` 를 먼저 안내).
+
+## 2026-09-17 README 에서 "개발 방식" 절 제외
+- 선택지: 명세 §10-7 대로 포함 / 제외
+- 선택: 제외
+- 이유: 저장소 소유자 결정. README 에 넣을 필요가 없다고 판단했다.

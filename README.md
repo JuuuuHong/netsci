@@ -185,7 +185,3 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 
 테스트는 네트워크에 접근하지 않습니다 (HTTP 클라이언트를 트레이트로 추상화해 가짜 구현을 주입).
 매크로 컴파일 에러 메시지를 바꿨다면 `TRYBUILD=overwrite cargo test -p netsci-report-derive` 로 `.stderr` 를 갱신합니다.
-
-### 개발 방식
-
-LLM(Claude)을 활용해 구현했습니다. 명세 작성·설계 결정·결과 검증과 결정 기록은 직접 했습니다.
