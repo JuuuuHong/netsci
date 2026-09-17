@@ -19,7 +19,7 @@ pub struct ConceptTerms {
 /// `--alias "X-ray photoelectron spectroscopy=XPS"` 한 개.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Alias {
-    /// 개념 표시 이름 (대소문자 무시로 비교)
+    /// 개념 표시 이름 (유니코드 소문자로 바꿔 대소문자 무시로 비교)
     pub concept: String,
     pub term: String,
 }
@@ -94,6 +94,11 @@ pub fn parse_alias(value: &str) -> Result<Alias, String> {
     })
 }
 
+/// 레이블 이름 비교. ASCII 밖 문자(`É` 등)도 대소문자를 무시하도록 소문자로 바꿔 비교한다.
+pub fn same_name(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase()
+}
+
 /// 소문자로 바꾸고 영숫자가 아닌 문자를 공백 하나로 접은 뒤 양끝에 공백을 둔다.
 /// 양끝 공백 덕분에 `" term "` 부분 문자열 검색이 단어 경계 일치가 된다.
 pub fn normalize(text: &str) -> String {
@@ -129,7 +134,7 @@ impl ConceptTerms {
     pub fn new(name: &str, aliases: &[Alias]) -> Self {
         let mut terms = vec![concept_term(name)];
         for alias in aliases {
-            if alias.concept.eq_ignore_ascii_case(name) {
+            if same_name(&alias.concept, name) {
                 let term = normalize(&alias.term);
                 if !terms.contains(&term) {
                     terms.push(term);
@@ -255,12 +260,8 @@ pub fn evidence(
     } else {
         (0..limit).map(|k| &hits[k * total / limit]).collect()
     };
-    let tagged = |work: &Work, name: &str| {
-        filter
-            .apply(work)
-            .iter()
-            .any(|l| l.name.eq_ignore_ascii_case(name))
-    };
+    let tagged =
+        |work: &Work, name: &str| filter.apply(work).iter().any(|l| same_name(l.name, name));
     picked
         .into_iter()
         .map(|(i, text)| Evidence {

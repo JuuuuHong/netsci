@@ -123,6 +123,69 @@ fn 분류_옵션으로_concepts_를_고른다() {
 }
 
 #[test]
+fn verify_evidence_는_기본_분류가_concepts_다() {
+    let dir = corpus_dir("text-taxonomy");
+    let data = dir.to_str().unwrap();
+    let evidence = |extra: &[&str]| {
+        let mut args = vec![
+            "evidence",
+            "--a",
+            "Battery",
+            "--b",
+            "Electrolyte",
+            "--format",
+            "json",
+            "--data",
+            data,
+        ];
+        args.extend_from_slice(extra);
+        let out = netsci(&args);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let rows: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        (rows, String::from_utf8(out.stderr).unwrap())
+    };
+
+    // Battery·Electrolyte 는 토픽 이름이라 기본(concepts)에서는 태그가 없다
+    let (rows, stderr) = evidence(&[]);
+    assert_eq!(
+        (rows[0]["id"].as_str(), rows[0]["tag_a"].as_bool()),
+        (Some("W1"), Some(false))
+    );
+    assert!(!stderr.contains("토픽 이름은 구문형"), "{stderr}");
+    assert!(
+        stderr.contains("`Battery` 과 이름이 같은 concepts 레이블"),
+        "{stderr}"
+    );
+
+    let (rows, stderr) = evidence(&[
+        "--taxonomy",
+        "topics",
+        "--alias",
+        "Anode=negative electrode",
+    ]);
+    assert_eq!(rows[0]["tag_a"].as_bool(), Some(true));
+    assert!(stderr.contains("토픽 이름은 구문형"), "{stderr}");
+    assert!(!stderr.contains("`Battery` 과 이름이 같은"), "{stderr}");
+    assert!(
+        stderr.contains("--alias `Anode=negative electrode`"),
+        "{stderr}"
+    );
+
+    let verify = |extra: &[&str]| {
+        let mut args = vec!["verify", "--data", data];
+        args.extend_from_slice(extra);
+        String::from_utf8(netsci(&args).stderr).unwrap()
+    };
+    assert!(!verify(&[]).contains("토픽 이름은 구문형"));
+    assert!(verify(&["--taxonomy", "topics"]).contains("토픽 이름은 구문형"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn 잘못된_인자는_종료_코드_2() {
     let out = netsci(&["gaps", "--min-score", "NaN"]);
     assert_eq!(out.status.code(), Some(2));

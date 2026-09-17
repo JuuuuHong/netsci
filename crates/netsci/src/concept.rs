@@ -181,7 +181,7 @@ impl ConceptGraph {
         strength
     }
 
-    /// 개념별 가중치가 가장 큰 이웃. 동점이면 이름 오름차순. 이웃이 없으면 `None`.
+    /// 개념별 가중치가 가장 큰 이웃. 동점이면 이름 오름차순, 이름도 같으면 id 오름차순. 이웃이 없으면 `None`.
     pub fn top_neighbors(&self) -> Vec<Option<u32>> {
         let mut best: Vec<Option<(u32, u32)>> = vec![None; self.concept_count()];
         for (&(a, b), &w) in &self.cooccurrence {
@@ -190,8 +190,8 @@ impl ConceptGraph {
                 let better = match *slot {
                     None => true,
                     Some((cur, cur_w)) => {
-                        w > cur_w
-                            || (w == cur_w && self.names[other as usize] < self.names[cur as usize])
+                        let key = |n: u32| (&self.names[n as usize], &self.ids[n as usize]);
+                        w > cur_w || (w == cur_w && key(other) < key(cur))
                     }
                 };
                 if better {

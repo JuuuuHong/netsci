@@ -170,6 +170,28 @@ fn concepts_명령_행() {
 }
 
 #[test]
+fn top_neighbor_는_가중치와_이름이_같으면_id_로_고른다() {
+    // "Hub" 의 이웃 둘은 가중치 1, 이름 "Twin" 이 같고 id 만 다르다
+    let tagged = |id: usize, concept_id: &str| {
+        let mut w = work(id, &["Hub"]);
+        w.concepts.push(Concept {
+            id: concept_id.to_string(),
+            name: "Twin".to_string(),
+            level: 2,
+            score: 0.5,
+        });
+        w
+    };
+    for _ in 0..20 {
+        let works = vec![tagged(1, "C-z"), tagged(2, "C-a")];
+        let graph = ConceptGraph::build(&works, &ConceptFilter::concepts());
+        let hub = graph.index["C-Hub"] as usize;
+        let best = graph.top_neighbors()[hub].unwrap();
+        assert_eq!(graph.ids[best as usize], "C-a");
+    }
+}
+
+#[test]
 fn gaps_명령_행과_stats_개념_수() {
     let works = hand_corpus();
     let rows = commands::gaps(&works, &ConceptFilter::concepts(), 3, 1);

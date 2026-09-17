@@ -10,7 +10,7 @@ use netsci::concept::{ConceptFilter, Taxonomy, parse_min_score};
 use netsci::corpus::{self, WORKS_FILE, Work};
 use netsci::fetch::{self, FETCH_SCHEMA, FetchParams};
 use netsci::openalex::HttpClient;
-use netsci::verify::{Alias, parse_alias};
+use netsci::verify::{Alias, parse_alias, same_name};
 use netsci_report::{Format, Report, render};
 use serde::Serialize;
 
@@ -46,20 +46,18 @@ impl From<OutputFormat> for Format {
     }
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum TaxonomyArg {
-    /// OpenAlex 권장 분류 (기본)
+    /// OpenAlex 권장 분류 (concepts·gaps 기본)
     Topics,
-    /// 폐기 예정 분류 (비교용)
+    /// 폐기 예정 분류 (verify·evidence 기본, 그래프에서는 비교용)
     Concepts,
 }
 
-/// 분류 그래프를 쓰는 명령의 공통 필터 옵션.
+/// 분류 그래프를 쓰는 명령의 공통 문턱값 옵션.
+/// `--taxonomy` 는 명령마다 기본값이 달라 각 명령에 따로 둔다.
 #[derive(Debug, Args)]
 struct FilterArgs {
-    /// 사용할 OpenAlex 분류
-    #[arg(long, value_enum, default_value_t = TaxonomyArg::Topics)]
-    taxonomy: TaxonomyArg,
     /// concepts 의 최소 level (topics 에는 level 이 없어 무시된다)
     #[arg(long, default_value_t = 2)]
     min_level: u8,
@@ -68,15 +66,15 @@ struct FilterArgs {
     min_score: f64,
 }
 
-impl From<&FilterArgs> for ConceptFilter {
-    fn from(args: &FilterArgs) -> Self {
-        Self {
-            taxonomy: match args.taxonomy {
+impl FilterArgs {
+    fn to_filter(&self, taxonomy: TaxonomyArg) -> ConceptFilter {
+        ConceptFilter {
+            taxonomy: match taxonomy {
                 TaxonomyArg::Topics => Taxonomy::Topics,
                 TaxonomyArg::Concepts => Taxonomy::Concepts,
             },
-            min_level: args.min_level,
-            min_score: args.min_score,
+            min_level: self.min_level,
+            min_score: self.min_score,
         }
     }
 }
@@ -106,6 +104,9 @@ enum Command {
     Concepts {
         #[arg(long, default_value_t = 20)]
         top: usize,
+        /// 사용할 OpenAlex 분류
+        #[arg(long, value_enum, default_value_t = TaxonomyArg::Topics)]
+        taxonomy: TaxonomyArg,
         #[command(flatten)]
         filter: FilterArgs,
     },
@@ -115,6 +116,9 @@ enum Command {
         top: usize,
         #[arg(long, default_value_t = 15)]
         min_works: usize,
+        /// 사용할 OpenAlex 분류
+        #[arg(long, value_enum, default_value_t = TaxonomyArg::Topics)]
+        taxonomy: TaxonomyArg,
         #[command(flatten)]
         filter: FilterArgs,
     },
@@ -124,6 +128,9 @@ enum Command {
         top: usize,
         #[arg(long, default_value_t = 15)]
         min_works: usize,
+        /// 사용할 OpenAlex 분류. 텍스트 검증은 이름을 본문에서 찾으므로 기본이 concepts 다
+        #[arg(long, value_enum, default_value_t = TaxonomyArg::Concepts)]
+        taxonomy: TaxonomyArg,
         #[command(flatten)]
         filter: FilterArgs,
         /// 추가 검색 표현. 여러 번 줄 수 있다 (예: "Faraday efficiency=Coulombic efficiency")
@@ -141,6 +148,9 @@ enum Command {
         /// 최대 표본 수
         #[arg(long, default_value_t = 30)]
         limit: usize,
+        /// 사용할 OpenAlex 분류. 텍스트 검증은 이름을 본문에서 찾으므로 기본이 concepts 다
+        #[arg(long, value_enum, default_value_t = TaxonomyArg::Concepts)]
+        taxonomy: TaxonomyArg,
         #[command(flatten)]
         filter: FilterArgs,
         #[arg(long = "alias", value_parser = parse_alias)]
@@ -179,48 +189,77 @@ async fn main() -> anyhow::Result<()> {
             let works = load_works(&cli.data)?;
             print_rows(&commands::citations(&works, top), format)
         }
-        Command::Concepts { top, filter } => {
+        Command::Concepts {
+            top,
+            taxonomy,
+            filter,
+        } => {
             let works = load_works(&cli.data)?;
-            warn_if_no_labels(&works, &filter);
-            print_rows(&commands::concepts(&works, &(&filter).into(), top), format)
+            warn_if_no_labels(&works, taxonomy);
+            print_rows(
+                &commands::concepts(&works, &filter.to_filter(taxonomy), top),
+                format,
+            )
         }
         Command::Gaps {
             top,
             min_works,
+            taxonomy,
             filter,
         } => {
             let works = load_works(&cli.data)?;
-            warn_if_no_labels(&works, &filter);
+            warn_if_no_labels(&works, taxonomy);
             print_rows(
-                &commands::gaps(&works, &(&filter).into(), min_works, top),
+                &commands::gaps(&works, &filter.to_filter(taxonomy), min_works, top),
                 format,
             )
         }
         Command::Verify {
             top,
             min_works,
+            taxonomy,
             filter,
             aliases,
         } => {
             let works = load_works(&cli.data)?;
-            warn_if_no_labels(&works, &filter);
+            warn_if_topics_for_text(taxonomy);
+            warn_if_no_labels(&works, taxonomy);
             warn_if_no_abstracts(&works);
-            print_rows(
-                &commands::verify(&works, &(&filter).into(), min_works, top, &aliases),
-                format,
-            )
+            let filter = filter.to_filter(taxonomy);
+            let rows = commands::verify(&works, &filter, min_works, top, &aliases);
+            let names: Vec<&str> = rows
+                .iter()
+                .flat_map(|r| [r.concept_a.as_str(), r.concept_b.as_str()])
+                .collect();
+            warn_unused_aliases(&aliases, &names);
+            print_rows(&rows, format)
         }
         Command::Evidence {
             a,
             b,
             limit,
+            taxonomy,
             filter,
             aliases,
         } => {
             let works = load_works(&cli.data)?;
+            warn_if_topics_for_text(taxonomy);
             warn_if_no_abstracts(&works);
+            let filter = filter.to_filter(taxonomy);
+            for name in [&a, &b] {
+                let tagged = works
+                    .iter()
+                    .any(|w| filter.apply(w).iter().any(|l| same_name(l.name, name)));
+                if !works.is_empty() && !tagged {
+                    eprintln!(
+                        "경고: `{name}` 과 이름이 같은 {} 레이블이 필터를 통과한 코퍼스에 없어 tag 열이 모두 false 다. 이름 철자나 --taxonomy 를 확인하라",
+                        taxonomy_name(taxonomy)
+                    );
+                }
+            }
+            warn_unused_aliases(&aliases, &[&a, &b]);
             print_rows(
-                &commands::evidence(&works, &(&filter).into(), &a, &b, &aliases, limit),
+                &commands::evidence(&works, &filter, &a, &b, &aliases, limit),
                 format,
             )
         }
@@ -228,14 +267,43 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// 토픽 수집 전 코퍼스에 topics 를 쓰면 결과가 조용히 비므로 알린다.
-fn warn_if_no_labels(works: &[Work], filter: &FilterArgs) {
-    if matches!(filter.taxonomy, TaxonomyArg::Topics)
+fn warn_if_no_labels(works: &[Work], taxonomy: TaxonomyArg) {
+    if taxonomy == TaxonomyArg::Topics
         && !works.is_empty()
         && works.iter().all(|w| w.topics.is_empty())
     {
         eprintln!(
             "경고: 토픽이 있는 작품이 없다. 토픽 수집 전(스키마 3 미만) 코퍼스라면 새 --data 로 다시 fetch 하거나 --taxonomy concepts 를 쓰라"
         );
+    }
+}
+
+/// 토픽 이름은 "Advanced Battery Materials and Technologies" 같은 긴 구문이라 본문에 그대로 나오는 일이 드물다.
+/// verify·evidence 에서 topics 를 직접 고르면 결과 대부분이 판정 불가·빈 표본이 되므로 알린다.
+fn warn_if_topics_for_text(taxonomy: TaxonomyArg) {
+    if taxonomy == TaxonomyArg::Topics {
+        eprintln!(
+            "경고: 토픽 이름은 구문형이라 제목·초록에 그대로 나오는 일이 드물어 텍스트 일치가 대부분 걸리지 않는다. --alias 로 표현을 더하거나 --taxonomy concepts 를 쓰라"
+        );
+    }
+}
+
+/// 이번 실행에서 쓰인 레이블 이름 어디에도 맞지 않는 `--alias` 는 조용히 무시되므로 알린다.
+fn warn_unused_aliases(aliases: &[Alias], names: &[&str]) {
+    for alias in aliases {
+        if !names.iter().any(|n| same_name(n, &alias.concept)) {
+            eprintln!(
+                "경고: --alias `{}={}` 의 개념 이름이 이번 결과의 어느 레이블과도 맞지 않아 쓰이지 않았다",
+                alias.concept, alias.term
+            );
+        }
+    }
+}
+
+fn taxonomy_name(taxonomy: TaxonomyArg) -> &'static str {
+    match taxonomy {
+        TaxonomyArg::Topics => "topics",
+        TaxonomyArg::Concepts => "concepts",
     }
 }
 

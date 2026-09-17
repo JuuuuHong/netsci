@@ -99,7 +99,8 @@ pub fn normalize_id(raw: &str) -> String {
 pub fn reconstruct_abstract(index: &HashMap<String, Vec<usize>>) -> Option<String> {
     let mut words: Vec<&str> = index.keys().map(String::as_str).collect();
     words.sort_unstable();
-    let len = index.values().flatten().max().map(|&m| m + 1)?;
+    // `usize::MAX` 위치는 `+ 1` 이 넘치므로 비정상 입력으로 보고 버린다
+    let len = index.values().flatten().max()?.checked_add(1)?;
     // 극단적으로 큰 위치 값에 메모리를 잡지 않도록 실제 단어 수의 몇 배로 제한한다
     let total: usize = index.values().map(Vec::len).sum();
     if len > total.saturating_mul(4).max(1024) {

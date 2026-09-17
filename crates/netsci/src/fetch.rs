@@ -123,7 +123,7 @@ pub async fn fetch<C: WorksClient>(
 
     while collected.len() < params.limit {
         let path = page_path(data_dir, index);
-        let (page, low_budget) = if tokio::fs::try_exists(&path).await.unwrap_or(false) {
+        let (page, low_budget) = if exists(&path).await? {
             summary.cached_pages += 1;
             let body = read_string(&path).await?;
             (parse_page(&path, &body, CACHED_PAGE_HINT)?, false)
@@ -136,7 +136,7 @@ pub async fn fetch<C: WorksClient>(
             let fetched = match client.fetch_page(&request).await {
                 Ok(fetched) => fetched,
                 // 한도가 이미 소진된 경우도 지금까지 받은 페이지로 works.jsonl 을 쓴다.
-                // 여기서 에러로 끝내면 --limit 을 줄여 다시 실행해도 query.json 불일치로 막힌다.
+                // 여기서 에러로 끝내면 한도가 풀릴 때까지 이미 받은 페이지로도 분석할 수 없다.
                 Err(err @ OpenAlexError::BudgetExhausted { .. }) => {
                     eprintln!("경고: {err}. 지금까지 받은 페이지로 works.jsonl 을 쓴다");
                     summary.stopped_by_budget = true;
@@ -220,13 +220,15 @@ pub fn truncate_and_dedup(mut works: Vec<Work>, limit: usize) -> Vec<Work> {
     works
 }
 
-/// `query.json` 이 없으면 쓰고, 있으면 인자가 같은지 확인한다.
+/// `query.json` 이 없으면 쓰고, 있으면 캐시 페이지 내용을 정하는 인자(`query`·`filter`·`schema`)가 같은지 확인한다.
+/// - `limit` 은 페이지 내용과 무관하므로 비교하지 않는다. `limit` 만 다르면 기록을 새 값으로 바꾸고 캐시를 그대로 쓴다
+///   (늘리면 마지막 캐시 페이지의 cursor 에서 이어받고, 줄이면 캐시에서 읽어 자른다).
 /// - 인자가 달라도 캐시된 페이지가 하나도 없으면 섞일 캐시가 없으므로 새 인자로 덮어쓴다
 ///   (예: 오타 난 filter 로 첫 요청이 실패한 뒤 고쳐서 다시 실행).
 /// - `query.json` 없이 캐시 페이지만 있으면 어느 질의의 것인지 모르므로 에러.
 async fn check_or_write_query(data_dir: &Path, params: &FetchParams) -> Result<(), FetchError> {
     let path = data_dir.join(QUERY_FILE);
-    if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
+    if !exists(&path).await? {
         if has_cached_pages(&data_dir.join(RAW_DIR)).await? {
             return Err(FetchError::OrphanCache {
                 path: data_dir.to_path_buf(),
@@ -239,7 +241,10 @@ async fn check_or_write_query(data_dir: &Path, params: &FetchParams) -> Result<(
                 path: path.clone(),
                 source,
             })?;
-        if &existing != params && has_cached_pages(&data_dir.join(RAW_DIR)).await? {
+        let same_pages = existing.query == params.query
+            && existing.filter == params.filter
+            && existing.schema == params.schema;
+        if !same_pages && has_cached_pages(&data_dir.join(RAW_DIR)).await? {
             return Err(FetchError::QueryMismatch {
                 path,
                 existing: Box::new(existing),
@@ -276,6 +281,16 @@ async fn has_cached_pages(raw_dir: &Path) -> Result<bool, FetchError> {
         }
     }
     Ok(false)
+}
+
+/// 파일이 있는지. 권한 오류 등 판단할 수 없는 경우를 "없음" 으로 보면 이미 받은 페이지를 유료로 다시 받으므로 에러로 돌려준다.
+async fn exists(path: &Path) -> Result<bool, FetchError> {
+    tokio::fs::try_exists(path)
+        .await
+        .map_err(|source| FetchError::Io {
+            path: path.to_path_buf(),
+            source,
+        })
 }
 
 async fn read_string(path: &Path) -> Result<String, FetchError> {

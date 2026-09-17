@@ -47,7 +47,10 @@ pub struct VerifyRow {
     pub text_expected: f64,
     /// 제목·초록에 두 개념 표현이 함께 나오는 논문 수
     pub text_observed: u32,
-    /// `unverifiable` · `absent_in_text` · `co_mentioned`
+    /// `text_observed / text_expected` (기대값이 0 이면 0). `co_mentioned` 는 공존 1편 이상일 뿐이라 이 값과 함께 읽는다
+    #[report(precision = 3)]
+    pub text_lift: f64,
+    /// `unverifiable` · `absent_in_text` · `co_mentioned`(텍스트 공존 1편 이상)
     pub verdict: String,
 }
 
@@ -216,6 +219,11 @@ pub fn verify(
             text_b: v.text_b,
             text_expected: v.text_expected,
             text_observed: v.text_observed,
+            text_lift: if v.text_expected > 0.0 {
+                f64::from(v.text_observed) / v.text_expected
+            } else {
+                0.0
+            },
             verdict: v.verdict.to_string(),
         })
         .collect()

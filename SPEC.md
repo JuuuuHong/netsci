@@ -158,7 +158,9 @@ netsci fetch --query "lithium metal anode" \
 동작:
 1. `<data>/raw/page-0000.json`, `page-0001.json` … 순서로 **이미 있으면 파일을 읽고, 없으면 호출해서 저장**한다.
    다음 cursor 는 직전 페이지 파일의 `meta.next_cursor` 에서 얻는다. → 중간에 끊겨도 다시 실행하면 이어서 받는다
-2. `<data>/query.json` 에 `{query, filter, limit, schema}` 를 저장한다. `schema` 는 캐시 페이지의 필드 구성 버전(2 = 초록 포함, 현재 3 = 토픽 포함, 필드가 없는 옛 파일은 1)이다. **이미 있는데 인자가 다르면 에러로 중단**한다 (다른 질의의 캐시가 섞이는 것을 막는다)
+2. `<data>/query.json` 에 `{query, filter, limit, schema}` 를 저장한다. `schema` 는 캐시 페이지의 필드 구성 버전(2 = 초록 포함, 현재 3 = 토픽 포함, 필드가 없는 옛 파일은 1)이다. **이미 있는데 `query`·`filter`·`schema` 중 하나라도 다르면 에러로 중단**한다 (다른 질의의 캐시가 섞이는 것을 막는다).
+   `limit` 은 페이지 내용과 무관하므로(per-page 는 항상 200) 비교하지 않는다. `limit` 만 다르면 `query.json` 을 새 값으로 갱신하고 캐시를 그대로 쓴다 — 늘리면 마지막 캐시 페이지의 `next_cursor` 부터 이어받고, 줄이면 캐시에서 읽어 자른다
+   (2026-09-17 변경, `docs/decisions.md`)
 3. 수집한 결과를 `limit` 에서 자르고 id 로 중복 제거해 `<data>/works.jsonl` 로 쓴다 (한 줄에 `Work` 하나)
 4. 출력: 받은 페이지 수(캐시 적중 / 새 호출), 작품 수, 누적 비용(USD), 한도 중단 여부, id 중복으로 버린 수(`duplicates`), 마지막 페이지의 `meta.count`(`reported_total`). 여러 날에 걸쳐 이어받으면 검색 결과 순서가 바뀌어 중복·누락이 생길 수 있으므로 이 두 값으로 확인한다
 
@@ -171,22 +173,28 @@ netsci fetch --query "lithium metal anode" \
 코퍼스 내부 인용 그래프의 PageRank 상위 N 편.
 열: `rank`, `id`, `title`(60자 자름), `year`, `pagerank`(소수 6자리), `in_corpus_citations`, `cited_by_count`
 
-### 4.4 `netsci concepts --top 20 [--min-level 2] [--min-score 0.4]`
+### 4.4 `netsci concepts --top 20 [--taxonomy topics] [--min-level 2] [--min-score 0.4]`
 개념 동시출현 그래프의 가중 연결강도(weighted degree) 상위 N 개.
 열: `rank`, `concept`, `level`, `works`(등장 논문 수), `strength`(가중 연결강도), `top_neighbor`
 
-### 4.5 `netsci gaps --top 20 [--min-works 15] [--min-level 2] [--min-score 0.4]`
+### 4.5 `netsci gaps --top 20 [--min-works 15] [--taxonomy topics] [--min-level 2] [--min-score 0.4]`
 공백 개념쌍 (§5.4).
 열: `rank`, `concept_a`, `concept_b`, `works_a`, `works_b`, `observed`, `expected`(소수 2자리), `lift`(소수 3자리)
 
-### 4.6 `netsci verify --top 20 [--min-works 15] [--min-level 2] [--min-score 0.4] [--alias "개념=표현"]...`
-공백 개념쌍 상위 N 개를 **제목·초록 텍스트 기준 공존**과 대조한다 (§5.5).
-열: `rank`, `concept_a`, `concept_b`, `expected`(소수 2자리), `tag_observed`, `text_a`, `text_b`, `text_expected`(소수 2자리), `text_observed`, `verdict`
+### 4.6 `netsci verify --top 20 [--min-works 15] [--taxonomy concepts] [--min-level 2] [--min-score 0.4] [--alias "개념=표현"]...`
+공백 개념쌍 상위 N 개를 **제목·초록 텍스트 기준 공존**과 대조한다 (§5.5). 기본 분류는 **concepts** 다(§5.2).
+열: `rank`, `concept_a`, `concept_b`, `expected`(소수 2자리), `tag_observed`, `text_a`, `text_b`, `text_expected`(소수 2자리), `text_observed`, `text_lift`(소수 3자리), `verdict`
+
+- `verdict` 의 `co_mentioned` 는 "텍스트 공존이 1편 이상" 일 뿐이다. 기대값에 비해 약한 공존인지는 `text_lift` 와 함께 읽는다
+- `--taxonomy topics` 를 직접 주면 토픽 이름이 본문과 거의 일치하지 않는다는 경고를 stderr 에 낸다
+- 결과 쌍의 어느 레이블 이름과도 맞지 않는 `--alias` 는 쓰이지 않았다고 stderr 에 경고한다
 
 > 추가 이유(2026-09-17): 공백 후보 상위가 태깅 누락의 부산물이라는 것을 사례 몇 개가 아니라 모든 후보에 대해 수치로 보이기 위해서다.
 
-### 4.7 `netsci evidence --a "개념 A" --b "개념 B" [--limit 30] [--alias ...]`
+### 4.7 `netsci evidence --a "개념 A" --b "개념 B" [--limit 30] [--taxonomy concepts] [--alias ...]`
 두 표현이 제목·초록에 함께 나오는 논문 표본. 해당 논문이 `limit` 보다 많으면 번호 순으로 고르게 건너뛰며 뽑는다(결정적).
+기본 분류는 **concepts** 다(§5.2). `--taxonomy topics` 를 직접 주면 §4.6 과 같은 경고를 낸다.
+`--a`/`--b` 가 필터를 통과한 코퍼스의 어느 레이블 이름과도 맞지 않으면(`tag_a`/`tag_b` 가 모두 false 가 된다), `--alias` 의 개념 이름이 `--a`/`--b` 어느 쪽과도 맞지 않으면 stderr 에 경고한다.
 열: `rank`, `id`, `year`, `tag_a`, `tag_b`, `title`, `snippet_a`, `snippet_b`, `total`, `url`, `label`(빈 칸 — 사람이 초록을 읽고 채운다)
 
 > 추가 이유(2026-09-17): verify 의 `co_mentioned` 가 실제로 "함께 다룸" 인지 사람이 표본을 읽어 정확도를 매기기 위해서다. 문자열 공존은 비교·부정 문장("unlike …")도 센다.
@@ -201,10 +209,11 @@ netsci fetch --query "lithium metal anode" \
 - 표현: `Vec<Vec<usize>>` 인접 리스트 + `HashMap<String, usize>` id 인덱스
 
 ### 5.2 분류 필터
-`concepts`·`gaps`·`verify`·`evidence` 는 `--taxonomy topics|concepts` 로 분류를 고른다. 기본은 **topics**.
+`concepts`·`gaps`·`verify`·`evidence` 는 `--taxonomy topics|concepts` 로 분류를 고른다. 기본은 그래프 명령(`concepts`·`gaps`)이 **topics**, 텍스트 검증 명령(`verify`·`evidence`)이 **concepts** 다.
+텍스트 검증은 레이블 이름을 본문에서 찾는데, 토픽 이름(예: `Advanced Battery Materials and Technologies`)은 구문형이라 제목·초록에 그대로 나오는 일이 드물기 때문이다 (2026-09-17 변경).
 - topics: `score >= min_score` 인 토픽만 남긴다 (level 없음). 기본 `0.4`
 - concepts: `level >= min_level && score >= min_score`. 기본 `2`, `0.4`. level 0~1 은 `Chemistry` 처럼 너무 일반적이라 모든 쌍을 연결해 버린다
-- concepts 는 OpenAlex 가 더 이상 관리하지 않는 분류라 **비교용**으로만 남긴다 (동음이의어 오분류 재현)
+- concepts 는 OpenAlex 가 더 이상 관리하지 않는 분류라 그래프에서는 **비교용**으로 남긴다 (동음이의어 오분류 재현). 텍스트 검증에서는 위 이유로 기본이다
 
 ### 5.3 PageRank (직접 구현)
 - 감쇠계수 `d = 0.85`, 수렴 조건 L1 변화량 `< 1e-10` 또는 최대 100회 반복
@@ -232,11 +241,12 @@ PR_new[v] = (1 - d)/N  +  d * ( Σ_{u→v} PR[u]/outdeg(u)  +  dangling_sum/N )
 
 ### 5.5 텍스트 검증
 - 텍스트 = 제목 + 초록. 소문자화하고 영숫자가 아닌 문자를 공백 하나로 접은 뒤 양끝에 공백을 둔다
-- 개념 표현 = 표시 이름에서 끝의 괄호 한정어를 뗀 것(`Lithium (medication)` → `lithium`) + `--alias` 로 준 표현. 같은 정규화를 거친 `" 표현 "` 이 텍스트에 부분 문자열로 있으면 일치 (단어 경계 일치)
+- 개념 표현 = 표시 이름에서 끝의 괄호 한정어를 뗀 것(`Lithium (medication)` → `lithium`) + `--alias` 로 준 표현. 별칭의 개념 이름은 유니코드 소문자로 바꿔 대소문자 무시로 비교한다. 같은 정규화를 거친 `" 표현 "` 이 텍스트에 부분 문자열로 있으면 일치 (단어 경계 일치)
 - `text_a`/`text_b` = 표현이 나오는 논문 수, `text_observed` = 둘 다 나오는 논문 수
 - 이름 일치는 개념 판정이 아니다 (`lithium` 은 약물과 금속을 구분하지 못한다). 검증은 "태그 공존 0 이 텍스트에서도 0 인가" 를 보는 용도이며 README 한계에 적는다
 - **모수는 초록이 있는 작품만.** 제목만 있는 작품은 표현이 걸릴 확률 자체가 낮아 텍스트 기대값을 체계적으로 낮추므로 뺀다
-- `text_expected = text_a × text_b / N`. 판정: `text_expected < 3.0` 이면 `unverifiable`(표현이 본문에 드물어 판정 불가 — 별칭 필요), 아니면 `text_observed == 0` 이면 `absent_in_text`, 그 밖은 `co_mentioned`. 하한 3.0 은 §5.4 와 같은 이유
+- `text_expected = text_a × text_b / N`. 판정: `text_expected < 3.0` 이면 `unverifiable`(표현이 본문에 드물어 판정 불가 — 별칭 필요), 아니면 `text_observed == 0` 이면 `absent_in_text`, 그 밖은 `co_mentioned`(공존 1편 이상). 하한 3.0 은 §5.4 와 같은 이유
+- `text_lift = text_observed / text_expected` (`text_expected` 가 0 이면 0). 판정은 바꾸지 않고, `co_mentioned` 중 기대에 비해 약한 공존을 읽는 쪽이 가려내도록 함께 출력한다
 
 ---
 
@@ -335,7 +345,7 @@ impl ::netsci_report::Report for GapRow {
 | OpenAlex 파싱 | `tests/fixtures/works_page.json` 을 역직렬화 → 결과 2건, id 가 `W2742075475` 로 정규화, `referenced_works` 550건, concepts 존재 |
 | 누락 필드 | `display_name: null`, `concepts` 키 없음 → 에러 없이 기본값 |
 | fetch 캐시 | 임시 디렉터리에 `page-0000.json` 을 미리 두면 HTTP 를 호출하지 않는다 (클라이언트를 트레이트로 추상화해 가짜 구현 주입) |
-| query.json 불일치 | 다른 `--query` 로 같은 `--data` 에 fetch → 에러 |
+| query.json 불일치 | 다른 `--query`·`--filter` 로 같은 `--data` 에 fetch → 에러. `--limit` 만 다르면 캐시 재사용·기록 갱신(늘리면 이어받기, 줄이면 자르기). 존재 확인 입출력 실패는 에러 |
 | PageRank | ① 합이 1 ② 3노드 순환에서 모두 1/3 ③ 별 모양(모두가 중심을 인용)에서 중심이 최대 ④ dangling 노드만 있는 그래프에서 균등 ⑤ 빈 그래프에서 패닉 없이 빈 결과 |
 | 인용 그래프 | 코퍼스 밖 참조·자기인용·중복 간선 제거 |
 | 개념 필터 | level·score 경계값 (`==` 포함) |
@@ -343,8 +353,8 @@ impl ::netsci_report::Report for GapRow {
 | render | Table 정렬, CSV 이스케이프(쉼표·따옴표·개행), JSON 유효성 |
 | topics | 픽스처 topics 파싱(계층 포함), 필드 누락 토픽 제거, 기본 분류가 topics, score 경계, 분류별 그래프 |
 | evidence | 초록 있는 논문만, 태그 여부, 고른 표본 추출, 비 ASCII 스니펫 경계 |
-| CLI 끝단 | 빌드된 바이너리 실행: stats JSON, CSV 이스케이프, `--taxonomy`, 잘못된 인자 종료 코드 2, 코퍼스 없음 안내 |
-| verify | 손으로 만든 코퍼스에서 text_a/text_b/text_observed 손계산 대조, 단어 경계(`binders` ≠ `binder`), 괄호 한정어 제거, 별칭, 초록 역색인 복원, 옛 스키마 캐시 거부 |
+| CLI 끝단 | 빌드된 바이너리 실행: stats JSON, CSV 이스케이프, `--taxonomy`, verify·evidence 기본 분류 concepts 와 경고, 잘못된 인자 종료 코드 2, 코퍼스 없음 안내 |
+| verify | 손으로 만든 코퍼스에서 text_a/text_b/text_observed/text_lift 손계산 대조, 단어 경계(`binders` ≠ `binder`), 괄호 한정어 제거, 별칭(유니코드 대소문자 포함), 초록 역색인 복원(위치 `usize::MAX` 포함), 옛 스키마 캐시 거부 |
 | 매크로 | §6.4 |
 
 ---

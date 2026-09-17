@@ -7,7 +7,7 @@ use netsci::concept::ConceptFilter;
 use netsci::corpus::{Concept, Work};
 use netsci::openalex::{WorksPage, reconstruct_abstract};
 use netsci::verify::{
-    Alias, ConceptTerms, Verdict, concept_term, normalize, parse_alias, verify_gaps,
+    Alias, ConceptTerms, Verdict, concept_term, normalize, parse_alias, same_name, verify_gaps,
 };
 
 fn concept(name: &str) -> Concept {
@@ -112,6 +112,8 @@ fn verify_명령_행() {
         (B, "Cathode")
     );
     assert_eq!((rows[0].tag_observed, rows[0].text_observed), (1, 1));
+    // text_lift = 1 / 1.5 — co_mentioned 여부와 별개로 공존이 기대보다 약한지 보여 준다
+    assert!((rows[0].text_lift - 1.0 / 1.5).abs() < 1e-12);
     assert_eq!(
         commands::stats(&corpus()).abstracts,
         4,
@@ -157,6 +159,11 @@ fn 별칭_인자_파싱() {
     let alias = parse_alias("x-ray PHOTOELECTRON spectroscopy=XPS").unwrap();
     let terms = ConceptTerms::new("X-ray photoelectron spectroscopy", &[alias]);
     assert_eq!(terms.terms.len(), 2, "개념 이름은 대소문자 무시로 비교한다");
+
+    let alias = parse_alias("élan vital=vitalism").unwrap();
+    let terms = ConceptTerms::new("Élan vital", &[alias]);
+    assert_eq!(terms.terms.len(), 2, "ASCII 밖 문자도 대소문자를 무시한다");
+    assert!(same_name("ÉLAN", "élan") && !same_name("elan", "élan"));
 }
 
 #[test]
@@ -192,6 +199,12 @@ fn 역색인_초록을_복원한다() {
         reconstruct_abstract(&huge),
         None,
         "비정상 위치에 메모리를 잡지 않는다"
+    );
+    let max = index(&[("a", &[0]), ("b", &[usize::MAX])]);
+    assert_eq!(
+        reconstruct_abstract(&max),
+        None,
+        "위치 + 1 이 넘쳐도 패닉하지 않는다"
     );
 }
 
@@ -279,7 +292,9 @@ fn evidence_표본은_고르게_건너뛰며_결정적으로_뽑는다() {
 
 #[test]
 fn 비_ascii_텍스트에서도_스니펫이_글자_경계를_지킨다() {
-    let long = format!("{} anode {}", "가".repeat(80), "나".repeat(80));
+    // 정규화 텍스트 " 가×80 x anode 나×80 …" 에서 " anode " 는 243 바이트에 있다.
+    // 시작 243 − 60 = 183 과 끝 243 + 120 = 363 이 모두 3바이트 글자 한가운데라 양쪽 경계 보정을 모두 거친다.
+    let long = format!("{} x anode {}", "가".repeat(80), "나".repeat(80));
     let works = vec![work(1, &[], None, Some(&format!("{long} cathode")))];
     let rows = commands::evidence(
         &works,
@@ -290,5 +305,9 @@ fn 비_ascii_텍스트에서도_스니펫이_글자_경계를_지킨다() {
         5,
     );
     assert_eq!(rows.len(), 1);
-    assert!(rows[0].snippet_a.contains("anode"));
+    assert_eq!(
+        rows[0].snippet_a,
+        format!("…{} x anode {}…", "가".repeat(20), "나".repeat(38)),
+        "시작은 앞 글자 경계(181)로, 끝은 뒤 글자 경계(364)로 옮겨 자른다"
+    );
 }

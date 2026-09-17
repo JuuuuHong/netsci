@@ -185,6 +185,99 @@ async fn 다른_질의로_같은_디렉터리에_fetch_하면_에러() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+#[tokio::test]
+async fn limit_만_다르면_캐시를_재사용하고_기록을_갱신한다() {
+    let saved_limit = |dir: &std::path::Path| {
+        let text = std::fs::read_to_string(dir.join("query.json")).unwrap();
+        serde_json::from_str::<FetchParams>(&text).unwrap().limit
+    };
+
+    // 늘리면 마지막 캐시 페이지의 cursor 에서 이어받는다
+    let dir = temp_dir("limit-grow");
+    seed_cache(
+        &dir,
+        &params("q", 2),
+        &[&page_json(&["W1", "W2"], Some("c1"))],
+    );
+    let mut client = FakeClient::default();
+    client
+        .responses
+        .push_back(Ok(fetched(page_json(&["W3", "W4"], None), 0.001, 0.09)));
+    let summary = fetch::fetch(&mut client, &dir, &params("q", 4))
+        .await
+        .unwrap();
+    assert_eq!((summary.cached_pages, summary.fetched_pages), (1, 1));
+    assert_eq!(summary.works, 4);
+    assert_eq!(client.requests.len(), 1);
+    assert_eq!(client.requests[0].cursor, "c1");
+    assert_eq!(saved_limit(&dir), 4);
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    // 줄이면 호출 없이 캐시에서 읽어 자른다
+    let dir = temp_dir("limit-shrink");
+    seed_cache(
+        &dir,
+        &params("q", 100),
+        &[
+            &page_json(&["W1", "W2"], Some("c1")),
+            &page_json(&["W3"], None),
+        ],
+    );
+    let mut client = FakeClient::default();
+    let summary = fetch::fetch(&mut client, &dir, &params("q", 1))
+        .await
+        .unwrap();
+    assert!(client.requests.is_empty());
+    assert_eq!((summary.cached_pages, summary.works), (1, 1));
+    assert_eq!(saved_limit(&dir), 1);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+async fn filter_가_다르면_limit_과_무관하게_에러() {
+    let dir = temp_dir("filter-mismatch");
+    seed_cache(&dir, &params("q", 2), &[&page_json(&["W1"], None)]);
+    let mut other = params("q", 2);
+    other.filter = None;
+
+    let mut client = FakeClient::default();
+    let err = fetch::fetch(&mut client, &dir, &other).await.unwrap_err();
+    assert!(matches!(err, FetchError::QueryMismatch { .. }), "{err}");
+    assert!(client.requests.is_empty());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// 존재 여부를 판단할 수 없는 경로(자기 자신을 가리키는 심볼릭 링크)는 "캐시 없음" 으로 보지 않는다.
+#[cfg(unix)]
+#[tokio::test]
+async fn 캐시_존재_확인_실패는_에러로_돌려준다() {
+    use std::os::unix::fs::symlink;
+
+    // 캐시 페이지
+    let dir = temp_dir("exists-page");
+    seed_cache(&dir, &params("q", 100), &[]);
+    let page = page_path(&dir, 0);
+    symlink(&page, &page).unwrap();
+    let mut client = FakeClient::default();
+    let err = fetch::fetch(&mut client, &dir, &params("q", 100))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, FetchError::Io { .. }), "{err}");
+    assert!(client.requests.is_empty(), "유료 호출로 넘어가면 안 된다");
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    // query.json
+    let dir = temp_dir("exists-query");
+    let query = dir.join("query.json");
+    symlink(&query, &query).unwrap();
+    let err = fetch::fetch(&mut client, &dir, &params("q", 100))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, FetchError::Io { .. }), "{err}");
+    assert!(client.requests.is_empty());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn limit_에서_자른_뒤_중복을_제거한다() {
     let work = |id: &str| corpus::Work {
