@@ -5,12 +5,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use netsci::commands;
 use netsci::concept::{ConceptFilter, Taxonomy, parse_min_score};
 use netsci::corpus::{self, WORKS_FILE, Work};
 use netsci::fetch::{self, FETCH_SCHEMA, FetchParams};
 use netsci::openalex::HttpClient;
 use netsci::verify::{Alias, parse_alias, same_name};
+use netsci::{backtest, commands};
 use netsci_report::{Format, Report, render};
 use serde::Serialize;
 
@@ -121,6 +121,27 @@ enum Command {
         taxonomy: TaxonomyArg,
         #[command(flatten)]
         filter: FilterArgs,
+        /// 쌍마다 매개 개념 B 후보를 이 수만큼 `bridges` 열에 붙인다 (0 이면 열 없음)
+        #[arg(long, default_value_t = 0)]
+        bridges: usize,
+    },
+    /// 분할 연도까지의 논문으로 뽑은 공백 후보가 이후 논문에서 함께 태깅됐는지 센다
+    Backtest {
+        /// 이 연도까지가 train, 다음 연도부터가 test
+        #[arg(long)]
+        split_year: i32,
+        #[arg(long, default_value_t = 20)]
+        top: usize,
+        #[arg(long, default_value_t = 15)]
+        min_works: usize,
+        /// 사용할 OpenAlex 분류
+        #[arg(long, value_enum, default_value_t = TaxonomyArg::Topics)]
+        taxonomy: TaxonomyArg,
+        #[command(flatten)]
+        filter: FilterArgs,
+        /// 쌍 목록 대신 후보 집단별 요약을 출력한다
+        #[arg(long)]
+        summary: bool,
     },
     /// gaps 상위 쌍을 제목·초록 텍스트 기준 공존과 대조한다
     Verify {
@@ -208,13 +229,48 @@ async fn main() -> anyhow::Result<()> {
             min_works,
             taxonomy,
             filter,
+            bridges,
         } => {
             let works = load_works(&cli.data)?;
             warn_if_no_labels(&works, taxonomy);
-            print_rows(
-                &commands::gaps(&works, &filter.to_filter(taxonomy), min_works, top),
-                format,
-            )
+            let filter = filter.to_filter(taxonomy);
+            // 기본(0)은 열을 더하지 않아 기존 출력과 같다
+            if bridges == 0 {
+                print_rows(&commands::gaps(&works, &filter, min_works, top), format)
+            } else {
+                print_rows(
+                    &commands::gaps_with_bridges(&works, &filter, min_works, top, bridges),
+                    format,
+                )
+            }
+        }
+        Command::Backtest {
+            split_year,
+            top,
+            min_works,
+            taxonomy,
+            filter,
+            summary,
+        } => {
+            let works = load_works(&cli.data)?;
+            warn_if_no_labels(&works, taxonomy);
+            let result =
+                backtest::backtest(&works, &filter.to_filter(taxonomy), min_works, split_year);
+            let (train, test) = (result.train.n_works(), result.test.n_works());
+            eprintln!(
+                "train {train}편(연도 <= {split_year}) · test {test}편(연도 > {split_year}) · 연도 없음 {}편 제외",
+                result.undated
+            );
+            if train == 0 || test == 0 {
+                eprintln!(
+                    "경고: train 또는 test 가 비어 있다. --split-year 가 코퍼스 연도 범위 안인지 확인하라"
+                );
+            }
+            if summary {
+                print_rows(&commands::backtest_summary(&result, top), format)
+            } else {
+                print_rows(&commands::backtest(&result, top), format)
+            }
         }
         Command::Verify {
             top,

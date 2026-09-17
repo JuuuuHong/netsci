@@ -186,6 +186,75 @@ fn verify_evidence_는_기본_분류가_concepts_다() {
 }
 
 #[test]
+fn gaps_bridges_는_0_이면_열이_없고_양수면_bridges_열을_붙인다() {
+    let dir = corpus_dir("bridges");
+    let data = dir.to_str().unwrap();
+    let header = |extra: &[&str]| {
+        let mut args = vec![
+            "gaps",
+            "--min-works",
+            "1",
+            "--format",
+            "csv",
+            "--data",
+            data,
+        ];
+        args.extend_from_slice(extra);
+        let out = netsci(&args);
+        assert!(out.status.success());
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap()
+            .to_string()
+    };
+    let plain = "rank,concept_a,concept_b,works_a,works_b,observed,expected,lift";
+    assert_eq!(header(&[]), plain);
+    assert_eq!(header(&["--bridges", "0"]), plain);
+    assert_eq!(header(&["--bridges", "2"]), format!("{plain},bridges"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn backtest_요약과_train_test_편수() {
+    let dir = corpus_dir("backtest");
+    let data = dir.to_str().unwrap();
+    let out = netsci(&[
+        "backtest",
+        "--split-year",
+        "2021",
+        "--summary",
+        "--format",
+        "csv",
+        "--data",
+        data,
+    ]);
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines[0],
+        "group,pairs,hits,hit_rate,evaluable,evaluable_hits,evaluable_hit_rate,median_test_lift,median_test_expected"
+    );
+    assert_eq!(lines.len(), 1 + 7, "{text}");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    // 코퍼스 연도는 2021·2022·2023
+    assert!(
+        stderr.contains("train 1편(연도 <= 2021) · test 2편"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("비어 있다"), "{stderr}");
+
+    let out = netsci(&["backtest", "--split-year", "2030", "--data", data]);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("비어 있다"));
+    // --split-year 는 필수다
+    assert_eq!(netsci(&["backtest", "--data", data]).status.code(), Some(2));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn 잘못된_인자는_종료_코드_2() {
     let out = netsci(&["gaps", "--min-score", "NaN"]);
     assert_eq!(out.status.code(), Some(2));

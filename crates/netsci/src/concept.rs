@@ -128,12 +128,13 @@ pub struct ConceptGraph {
 
 impl ConceptGraph {
     /// 필터된 개념 집합이 같은 논문에 함께 있으면 간선 가중치를 1 올린다.
-    pub fn build(works: &[Work], filter: &ConceptFilter) -> Self {
-        let mut graph = Self {
-            n_works: works.len(),
-            ..Self::default()
-        };
+    ///
+    /// 작품 목록을 복사하지 않고 일부만(예: `backtest` 의 연도별 train·test) 그래프로 만들 수 있도록
+    /// 슬라이스 대신 작품 참조의 반복자를 받는다.
+    pub fn build<'a>(works: impl IntoIterator<Item = &'a Work>, filter: &ConceptFilter) -> Self {
+        let mut graph = Self::default();
         for work in works {
+            graph.n_works += 1;
             let mut nodes: Vec<u32> = filter
                 .apply(work)
                 .into_iter()

@@ -95,3 +95,103 @@ pub fn find_gaps(graph: &ConceptGraph, min_works: usize, top: usize) -> Vec<Gap>
     });
     gaps
 }
+
+/// 매개 개념 B 가 되려면 A·C 각각과 함께 붙은 논문이 이 수 이상이어야 한다.
+/// lift 는 작은 수에서 크게 흔들리므로(공존 1편이 lift 수십이 될 수 있다) `MIN_EXPECTED` 와 같은 크기로 둔다.
+pub const MIN_BRIDGE_OBSERVED: u32 = 3;
+
+/// 공백 쌍 (A, C) 의 매개 개념 후보 B (Swanson ABC 모델의 B).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Bridge {
+    pub b: u32,
+    /// A 와 B 를 함께 가진 논문 수
+    pub observed_a: u32,
+    /// B 와 C 를 함께 가진 논문 수
+    pub observed_c: u32,
+}
+
+/// 간선 하나의 lift 를 N 을 뺀 분수 `observed / (works_x × works_y)` 로 둔다.
+/// N 은 모든 간선에 공통이라 순서 비교에는 필요 없다.
+#[derive(Debug, Clone, Copy)]
+struct EdgeLift {
+    observed: u128,
+    product: u128,
+}
+
+impl EdgeLift {
+    fn new(graph: &ConceptGraph, x: u32, y: u32) -> Self {
+        let works = graph.works();
+        Self {
+            observed: u128::from(graph.observed(x, y)),
+            product: u128::from(works[x as usize]) * u128::from(works[y as usize]),
+        }
+    }
+
+    /// 정수 교차곱 비교. 분모는 두 개념 모두 등장한 경우만 쓰므로 0 이 아니다.
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.observed * other.product).cmp(&(other.observed * self.product))
+    }
+
+    /// `lift > 1`, 즉 `observed × N > works_x × works_y`.
+    fn above_independence(&self, n: u128) -> bool {
+        self.observed * n > self.product
+    }
+}
+
+/// 공백 쌍 `(a, c)` 의 매개 개념 후보 B 상위 `top` 개.
+///
+/// 후보 B 는 A·C 가 아니고 `works(B) >= min_works` 이며, A–B·B–C 두 간선 모두 공존이
+/// [`MIN_BRIDGE_OBSERVED`] 이상이고 lift 가 1 을 넘는 개념이다. 순위는 두 간선 lift 의 최솟값 내림차순,
+/// 같으면 두 공존 수의 최솟값 내림차순, 이름 오름차순, 개념 번호 오름차순.
+///
+/// 공존 수 대신 lift 로 매기는 이유: 코퍼스 대부분에 붙는 허브 레이블은 어느 쌍과도 공존 수가 커서
+/// 공존 수 기준이면 거의 모든 쌍의 1위가 된다. lift 는 B 의 빈도로 나누므로 A 와 C 양쪽에
+/// 기대보다 자주 붙는 레이블을 올린다. 최솟값을 쓰는 것은 한쪽 간선만 강한 B 를 매개로 보지 않기 위해서다.
+///
+/// 비용: 후보 개념 K 개를 한 번 훑는다(쌍마다 O(K)).
+pub fn find_bridges(
+    graph: &ConceptGraph,
+    a: u32,
+    c: u32,
+    min_works: usize,
+    top: usize,
+) -> Vec<Bridge> {
+    let n = graph.n_works() as u128;
+    let names = graph.names();
+    let works = graph.works();
+    let mut scored: Vec<(Bridge, EdgeLift)> = (0..graph.concept_count() as u32)
+        .filter(|&b| b != a && b != c && works[b as usize] as usize >= min_works)
+        .filter_map(|b| {
+            let (lift_a, lift_c) = (EdgeLift::new(graph, a, b), EdgeLift::new(graph, b, c));
+            let bridge = Bridge {
+                b,
+                observed_a: graph.observed(a, b),
+                observed_c: graph.observed(b, c),
+            };
+            let strong = bridge.observed_a.min(bridge.observed_c) >= MIN_BRIDGE_OBSERVED
+                && lift_a.above_independence(n)
+                && lift_c.above_independence(n);
+            strong.then(|| {
+                let weakest = if lift_a.cmp(&lift_c).is_le() {
+                    lift_a
+                } else {
+                    lift_c
+                };
+                (bridge, weakest)
+            })
+        })
+        .collect();
+
+    // 마지막 키(개념 번호)로 전순서가 되어 불안정 정렬을 써도 된다.
+    sort_top_by(&mut scored, top, |(x, x_lift), (y, y_lift)| {
+        y_lift
+            .cmp(x_lift)
+            .then_with(|| {
+                let weakest = |b: &Bridge| b.observed_a.min(b.observed_c);
+                weakest(y).cmp(&weakest(x))
+            })
+            .then_with(|| names[x.b as usize].cmp(&names[y.b as usize]))
+            .then(x.b.cmp(&y.b))
+    });
+    scored.into_iter().map(|(bridge, _)| bridge).collect()
+}

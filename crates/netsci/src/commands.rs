@@ -3,10 +3,11 @@
 use netsci_report::Report;
 use serde::Serialize;
 
+use crate::backtest::{Backtest, GroupSummary, LiftBucket, PairOutcome, top_gaps};
 use crate::citation::{CitationGraph, pagerank};
 use crate::concept::{ConceptFilter, ConceptGraph};
 use crate::corpus::Work;
-use crate::gaps::find_gaps;
+use crate::gaps::{Gap, find_bridges, find_gaps};
 use crate::top::sort_top_by;
 use crate::verify::{Alias, evidence as find_evidence, verify_gaps};
 
@@ -183,23 +184,188 @@ pub fn concepts(works: &[Work], filter: &ConceptFilter, top: usize) -> Vec<Conce
         .collect()
 }
 
+/// `netsci gaps --bridges K` (K > 0) 한 행. `GapRow` 에 매개 개념 열을 더한다.
+#[derive(Debug, Clone, PartialEq, Report, Serialize)]
+pub struct GapBridgeRow {
+    pub rank: usize,
+    pub concept_a: String,
+    pub concept_b: String,
+    pub works_a: u32,
+    pub works_b: u32,
+    pub observed: u32,
+    #[report(precision = 2)]
+    pub expected: f64,
+    #[report(precision = 3)]
+    pub lift: f64,
+    /// 매개 개념 후보 `B (A와 공존|C와 공존)` 를 `; ` 로 이은 것 (§5.6). 조건을 만족하는 B 가 없으면 빈 칸
+    pub bridges: String,
+}
+
 /// 공백 개념쌍 상위 `top` 개.
 pub fn gaps(works: &[Work], filter: &ConceptFilter, min_works: usize, top: usize) -> Vec<GapRow> {
     let graph = ConceptGraph::build(works, filter);
     find_gaps(&graph, min_works, top)
         .into_iter()
         .enumerate()
-        .map(|(i, g)| GapRow {
-            rank: i + 1,
-            concept_a: graph.names()[g.a as usize].clone(),
-            concept_b: graph.names()[g.b as usize].clone(),
-            works_a: g.works_a,
-            works_b: g.works_b,
-            observed: g.observed,
-            expected: g.expected,
-            lift: g.lift,
+        .map(|(i, g)| gap_row(&graph, i, g))
+        .collect()
+}
+
+/// 공백 개념쌍 상위 `top` 개와 쌍마다 매개 개념 후보 상위 `bridges` 개.
+pub fn gaps_with_bridges(
+    works: &[Work],
+    filter: &ConceptFilter,
+    min_works: usize,
+    top: usize,
+    bridges: usize,
+) -> Vec<GapBridgeRow> {
+    let graph = ConceptGraph::build(works, filter);
+    find_gaps(&graph, min_works, top)
+        .into_iter()
+        .enumerate()
+        .map(|(i, g)| {
+            let cell = find_bridges(&graph, g.a, g.b, min_works, bridges)
+                .iter()
+                .map(|b| {
+                    let name = &graph.names()[b.b as usize];
+                    format!("{name} ({}|{})", b.observed_a, b.observed_c)
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            let row = gap_row(&graph, i, g);
+            GapBridgeRow {
+                rank: row.rank,
+                concept_a: row.concept_a,
+                concept_b: row.concept_b,
+                works_a: row.works_a,
+                works_b: row.works_b,
+                observed: row.observed,
+                expected: row.expected,
+                lift: row.lift,
+                bridges: cell,
+            }
         })
         .collect()
+}
+
+fn gap_row(graph: &ConceptGraph, index: usize, gap: Gap) -> GapRow {
+    GapRow {
+        rank: index + 1,
+        concept_a: graph.names()[gap.a as usize].clone(),
+        concept_b: graph.names()[gap.b as usize].clone(),
+        works_a: gap.works_a,
+        works_b: gap.works_b,
+        observed: gap.observed,
+        expected: gap.expected,
+        lift: gap.lift,
+    }
+}
+
+/// `netsci backtest` 한 행: train 공존 0 인 공백 후보와 test 결과.
+#[derive(Debug, Clone, PartialEq, Report, Serialize)]
+pub struct BacktestRow {
+    pub rank: usize,
+    pub concept_a: String,
+    pub concept_b: String,
+    pub train_works_a: u32,
+    pub train_works_b: u32,
+    #[report(precision = 2)]
+    pub train_expected: f64,
+    /// test 에서 A 가 붙은 논문 수 (test 에 없으면 0)
+    pub test_works_a: u32,
+    pub test_works_b: u32,
+    /// test 에서 두 레이블이 함께 붙은 논문 수
+    pub test_observed: u32,
+    #[report(precision = 2)]
+    pub test_expected: f64,
+    /// `test_observed / test_expected`. 한쪽 레이블이 test 에 없으면 빈 칸
+    #[report(precision = 3)]
+    pub test_lift: Option<f64>,
+}
+
+/// `netsci backtest --summary` 한 행: 후보 집단별 test 결과 요약.
+#[derive(Debug, Clone, PartialEq, Report, Serialize)]
+pub struct BacktestSummaryRow {
+    /// `top_N_gaps` · `train_lift ...` 구간 · `all_candidates`(기준선)
+    pub group: String,
+    pub pairs: usize,
+    /// test 공존 1편 이상인 쌍 수
+    pub hits: usize,
+    #[report(precision = 3)]
+    pub hit_rate: Option<f64>,
+    /// test 기대값 ≥ 3 인 쌍 수
+    pub evaluable: usize,
+    pub evaluable_hits: usize,
+    #[report(precision = 3)]
+    pub evaluable_hit_rate: Option<f64>,
+    /// 판정 가능 쌍의 `test_lift` 중앙값
+    #[report(precision = 3)]
+    pub median_test_lift: Option<f64>,
+    /// 모든 쌍의 `test_expected` 중앙값
+    #[report(precision = 2)]
+    pub median_test_expected: Option<f64>,
+}
+
+/// train 공존 0 인 공백 후보 상위 `top` 개의 test 결과.
+pub fn backtest(result: &Backtest, top: usize) -> Vec<BacktestRow> {
+    let names = result.train.names();
+    top_gaps(&result.pairs, top)
+        .enumerate()
+        .map(|(i, p)| BacktestRow {
+            rank: i + 1,
+            concept_a: names[p.train.a as usize].clone(),
+            concept_b: names[p.train.b as usize].clone(),
+            train_works_a: p.train.works_a,
+            train_works_b: p.train.works_b,
+            train_expected: p.train.expected,
+            test_works_a: p.test_works_a,
+            test_works_b: p.test_works_b,
+            test_observed: p.test_observed,
+            test_expected: p.test_expected,
+            test_lift: p.test_lift(),
+        })
+        .collect()
+}
+
+/// 집단별 요약: 상위 `top` 공백 후보, train lift 구간 다섯, 전체 후보(기준선) 순.
+pub fn backtest_summary(result: &Backtest, top: usize) -> Vec<BacktestSummaryRow> {
+    let n_train = result.train.n_works();
+    let in_bucket = |bucket: LiftBucket| {
+        result
+            .pairs
+            .iter()
+            .filter(move |p| LiftBucket::of(&p.train, n_train) == bucket)
+    };
+    let mut rows = vec![summary_row(
+        format!("top_{top}_gaps"),
+        top_gaps(&result.pairs, top),
+    )];
+    rows.extend(
+        LiftBucket::ALL
+            .into_iter()
+            .map(|b| summary_row(b.as_str().to_string(), in_bucket(b))),
+    );
+    rows.push(summary_row("all_candidates".to_string(), &result.pairs));
+    rows
+}
+
+fn summary_row<'a>(
+    group: String,
+    pairs: impl IntoIterator<Item = &'a PairOutcome>,
+) -> BacktestSummaryRow {
+    let s = GroupSummary::of(pairs);
+    let rate = |part: usize, whole: usize| (whole > 0).then(|| part as f64 / whole as f64);
+    BacktestSummaryRow {
+        group,
+        pairs: s.pairs,
+        hits: s.hits,
+        hit_rate: rate(s.hits, s.pairs),
+        evaluable: s.evaluable,
+        evaluable_hits: s.evaluable_hits,
+        evaluable_hit_rate: rate(s.evaluable_hits, s.evaluable),
+        median_test_lift: s.median_test_lift,
+        median_test_expected: s.median_test_expected,
+    }
 }
 
 /// 공백 개념쌍 상위 `top` 개를 제목·초록 텍스트로 검증한 행.
