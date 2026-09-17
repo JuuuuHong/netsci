@@ -282,3 +282,51 @@
 - 선택: 후자. `CitationGraph`·`ConceptGraph` 의 필드를 비공개로 하고 `build` 로만 만든다. 접근자는 명령·테스트가 쓰는 것만 둔다(`ids()`·`node(id)`·`work_index(node)`·`adjacency()`·`total_references()` / `n_works()`·`ids()`·`names()`·`levels()`·`works()`·`concept(id)`)
 - 이유: 공개 필드면 누구든 범위 밖 노드 번호나 중복 간선이 든 인접 리스트를 만들 수 있어, `pagerank(&[Vec<usize>])` 가 범위 밖 간선을 걸러 출차수를 다시 세는 방어 코드를 가졌다. 이 경로는 `CitationGraph::build` 가 절대 만들지 않는 입력을 위한 것이었다. `pagerank(&CitationGraph)` 로 받으면 "노드 번호가 범위 안, 리스트마다 정렬·중복·자기 간선 없음" 이 타입으로 보장되어 방어 코드와 그 테스트(범위 밖 간선 무시)를 뺐다. `ConceptGraph` 도 이름·레벨·등장 수 벡터의 길이와 `(a, b)` 키의 `a < b` 가 `build` 에서만 세워진다
 - 테스트: PageRank 테스트(합 1, 두 노드 정확값, 명세 식 고정점, 순환, 별, dangling 만, 빈 그래프)는 인접 리스트 모양대로 서로 인용하는 작품 목록을 공개 빌더로 만들어 그대로 옮기고, 빌더가 같은 인접 리스트를 냈는지도 확인한다. 범위 밖 간선 테스트는 "코퍼스 밖·자기·중복 참조는 간선과 출차수에 들어가지 않는다" 테스트로 바꿨다
+
+## 2026-09-17 매개 개념 B 제안(`gaps --bridges K`) — 점수 정의 (결과를 보기 전에 기록)
+- 선택지: `min(weight(A,B), weight(B,C))` 가중치(공존 수) 순 / `min(lift(A,B), lift(B,C))` 순 / 두 간선 lift 의 곱·조화평균
+- 선택: 두 간선 lift 의 최솟값 내림차순. 후보 B 는 A·C 가 아니고 `works(B) >= min_works` 이며, 두 간선 모두 공존 3편 이상이고 lift 가 1 을 넘는 것(`observed × N > works × works`)만. 동점이면 두 간선 공존 수의 최솟값 내림차순, 이름 오름차순, 개념 번호 오름차순. 기본 `K = 0` 은 지금과 같은 행 타입·출력이고, `K > 0` 이면 `bridges` 열이 붙는다. 셀은 `B (A와 공존|C와 공존)` 를 `; ` 로 잇는다
+- 이유:
+  - **허브 편향**: 공존 수의 최솟값은 코퍼스 대부분에 붙는 레이블(리튬의 `Electrolyte`·배터리 토픽, RAG 의 `Language model`·`Topic Modeling`)이 거의 모든 쌍에서 1위가 된다. 그런 B 는 A·C 에 대해 아무것도 말하지 않는다. lift 는 B 의 빈도로 나누므로 "A 논문에서 B 가 기대보다 잦고 C 논문에서도 잦은" 레이블을 올린다. 최솟값을 쓰는 이유는 한쪽 간선만 강한 B(A 와만 얽힌 하위 개념)를 매개로 보지 않기 위해서다 (약한 고리 기준)
+  - **lift > 1 조건**: 독립보다 덜 함께 나오는 B 는 A 와 C 를 잇는다고 볼 근거가 없다. 조건을 만족하는 B 가 없으면 빈 칸이다
+  - **공존 3편 하한**: lift 는 작은 수에서 크게 흔들린다(공존 1편이 lift 수십이 될 수 있다). `MIN_EXPECTED = 3` 과 같은 크기로 정했고 결과를 보고 바꾸지 않는다
+  - 비교는 N 이 공통이라 `observed / (works_a × works_b)` 를 정수 교차곱으로 해 동점을 정확히 판정한다 (gaps 와 같은 방식)
+- 한계: 동시출현 lift 는 "함께 태깅됐다" 일 뿐 A→B→C 의 기전이 아니다. B 는 가설 후보를 읽을 실마리이고 README 에는 결과를 보고 고르지 않도록 미리 정한 쌍만 싣는다: 리튬 `gaps --taxonomy concepts --top 3 --bridges 3`, RAG `gaps --top 3 --bridges 3`(topics, README 가 분야별로 쓸 만하다고 본 분류)
+
+## 2026-09-17 시간 분할 검증(`backtest`) 설계와 분할 연도 — 사전 등록 (결과를 보기 전에 기록)
+- 선택지: 무작위 분할 / 연도 기준 hold-out
+- 선택: 연도 기준. `backtest --split-year Y [--top N] [--min-works W] [--taxonomy T] [--min-level L] [--min-score S] [--summary]`
+- 설계:
+  - train = 연도 ≤ Y, test = 연도 > Y. 연도가 없는 작품은 둘 다에서 뺀다. 레이블 필터·`min_works`·`expected`·후보 쌍은 **train 만으로** 계산한다(`gaps` 와 같은 규칙, `expected >= 3`). test 는 같은 필터로 따로 그래프를 만들고 레이블 id 로 짝짓는다
+  - 쌍마다 `test_observed`(test 에서 A·C 가 함께 붙은 논문 수), `test_expected = test_works_a × test_works_b / N_test`, `test_lift = test_observed / test_expected`. 한쪽 레이블이 test 에 없으면 `test_expected = 0`, `test_lift` 는 빈 칸
+  - 기본 출력: train 공존 0 인 쌍 중 `gaps` 순위 상위 N 개와 train·test 통계. `--summary`: 집단별 요약 — 상위 N 공백 후보 / train lift = 0 전체 / (0, 0.5) / [0.5, 1) / [1, 2) / ≥ 2 / 전체 후보(기준선). 열은 쌍 수, test 공존 1편 이상 비율(hit rate), test 기대값 3 이상인 "판정 가능" 쌍 수와 그 안의 hit rate, 판정 가능 쌍의 `test_lift` 중앙값, `test_expected` 중앙값
+  - train lift 구간은 부동소수 대신 정수 비교(`observed × N` 과 `works_a × works_b` 의 배수)로 나눈다
+  - 한 표에 행 타입이 둘이면 CSV·JSON 이 깨지므로 `--summary` 플래그로 나눈다. train·test 편수는 stderr 에 한 줄로 알린다
+- 해석 주의 (README 에도 쓴다): test 공존은 "가설이 맞았다" 가 아니라 "나중에 함께 태깅됐다" 이다. 흔한 레이블끼리는 test 기대값이 커서 공존이 쉽게 생기므로 hit rate 는 집단마다 기준선(전체 후보)과 test 기대값을 함께 봐야 한다
+- 분할 연도 규칙: 연도별 누적 비율이 처음 50% 이상이 되는 연도 Y. 그 연도가 마지막 연도라 test 가 비면 바로 앞 연도. 위 규칙과 `works.jsonl` 연도 분포로 정한 값:
+  - `data/li-anode-phrase`(인용 > 20, 4,438편): 누적 2021년 50.6% → **Y = 2021**
+  - `data/li-anode-phrase-all`(인용 필터 없음, 9,934편): 2022년 57.8% → **Y = 2022**
+  - `data/rag-phrase`(964편): 2024년에야 100% → 앞 연도 **Y = 2023** (2023년까지 34.3%)
+  - `data/rag-phrase-all`(10,681편): 2024년에야 100% → **Y = 2023** (2023년까지 19.2%)
+- 실행 목록 (모두 보고한다): 네 코퍼스 × `--taxonomy topics`·`concepts` × (`--top 20` 표, `--top 20 --summary`), 다른 값은 기본(`--min-works 15`, 기본 필터). 문턱값을 바꾼 추가 실행은 하지 않는다
+- 주 분석은 **인용 필터 없는 코퍼스**로 정한다. `cited_by_count > 20` 은 2026년 시점의 피인용으로 고른 것이라, 필터 코퍼스의 train 논문은 분할 뒤에 쌓인 인용(미래 정보)으로 선택된다. 필터 코퍼스 결과는 비교용으로 함께 싣는다
+
+## 2026-09-17 인용 필터 영향(생존 편향) 비교 방법 — 사전 등록 (결과를 보기 전에 기록)
+- 선택지: 사례 몇 쌍 비교 / 후보 전체를 쌍 이름으로 이어 붙여 비교
+- 선택: 후보 전체. 같은 검색어·연도의 필터 코퍼스(`*-phrase`)와 필터 없는 코퍼스(`*-phrase-all`)에 `stats` 와 `gaps --top 100000 --format csv`(두 분류 모두, 기본 문턱값)를 돌리고 scratchpad 스크립트로 `(concept_a, concept_b)` 이름 쌍을 잇는다
+- 지표 (두 분야 × 두 분류 모두 보고):
+  - 필터 코퍼스 `gaps` 상위 20쌍 중 필터 없는 코퍼스 상위 20쌍에 남는 수, 필터 없는 코퍼스에서 공존 > 0 이 된 수, 후보에서 빠진 수
+  - 필터 코퍼스의 공존 0 쌍 전체 중 필터 없는 코퍼스에서 공존 > 0 인 비율과, 필터 코퍼스 lift 구간별 필터 없는 코퍼스 lift 중앙값 (코퍼스가 커지면 공존 기회 자체가 늘어나므로 공존 > 0 비율만으로는 판단하지 않는다)
+  - 연도 분포 차이, 필터 코퍼스 작품 id 가 필터 없는 코퍼스에 포함되는 비율 (두 코퍼스는 같은 날 받았지만 따로 받은 것이라 부분집합인지 확인한다)
+
+## 2026-09-17 매개 개념·시간 분할·인용 필터 비교 결과
+- 선택지: 결과가 좋은 실행만 README 에 싣는다 / 사전 등록한 실행을 모두 보고한다
+- 선택: 모두 보고한다. 위 세 사전 등록 항목의 문턱값·분할 연도·실행 목록을 결과를 본 뒤 바꾸지 않았다. README 에는 요약 표를, 전체 실행 명령은 README 에 적었다
+- 코드: `ConceptGraph::build` 가 `&[Work]` 대신 `impl IntoIterator<Item = &Work>` 를 받게 바꿔 train·test 를 복사 없이 만든다(`&Vec<Work>`·`&[Work]` 호출은 그대로 컴파일된다). 기존 명령·옵션의 출력 48개 파일은 변경 전과 바이트 단위로 같다
+- **시간 분할** (`backtest --top 20 --summary`, 판정 가능 = test 기대값 ≥ 3):
+  - 판정 가능 쌍이 있는 7개 실행 모두에서 `test_lift` 중앙값이 train lift 구간(0 → ≥ 2)을 따라 커졌다. 나머지 1개(`rag-phrase` concepts)는 판정 가능 쌍이 1개뿐이었다
+  - 공백 후보(train 공존 0) 상위 20쌍의 판정 가능 hit rate 는 상위 20쌍에 판정 가능 쌍이 있는 7개 실행 모두에서 기준선(전체 후보)보다 낮았다(`rag-phrase` concepts 는 공존 0 후보가 1쌍, 판정 가능 0쌍). 필터 없는 코퍼스: 리튬 concepts 0.611 대 0.942, 리튬 topics 0.100 대 0.698, RAG topics 0.500 대 0.803, RAG concepts 0.714 대 0.962
+  - **해석**: 낮은 공존은 시기가 바뀌어도 대체로 유지되는 안정적인 신호다. 반대로 "공백 후보가 이후에 채워진다" 는 근거는 없다 — 채워지는 비율은 기준선보다 낮다. 이 lift 순위는 "앞으로 함께 연구될 조합" 예측기로 검증되지 않았다. 리튬 topics 공백이 가장 잘 유지된 것(0.100)은 토픽 자리 포화라는 배정 방식 산물도 시간에 따라 유지된다는 뜻이라, 유지 자체가 실제 공백의 증거는 아니다
+  - `rag-phrase`(인용 필터) train 은 331편이라 topics 후보 21쌍·concepts 51쌍뿐이고, `rag-phrase-all` concepts 는 test 8,628편인데 `median_test_expected` 가 1.07 이라 판정 가능 쌍이 951쌍 중 158쌍이었다 (2024년 논문의 concepts 태그 분포는 확인하지 않았다)
+- **매개 개념** (사전 등록한 README 실행): 리튬 concepts 1위 `Faraday efficiency × Solid-state` 의 B 는 `Metal`·`Electrical conductor`·`Electrolyte`, 2위 `Fast ion conductor × Stripping (fiber)` 는 `Analytical Chemistry (journal)`(오분류 concept)·`Alkali metal`·`Covalent bond`. RAG topics 1·3위는 조건을 만족하는 B 가 없어 빈 칸이고 2위는 `Topic Modeling`(964편 중 490편에 붙는 허브)이었다. lift > 1 조건이 허브를 완전히 막지 못하고(허브가 A·C 양쪽에 조금이라도 기대보다 잦으면 통과), concepts 의 오분류가 B 로도 올라온다. 문턱값은 바꾸지 않고 README 한계에 적었다
+- **인용 필터 비교**: 필터 코퍼스는 필터 없는 코퍼스의 부분집합이었다(리튬 4,438/4,438, RAG 964/964). 필터 코퍼스 비율은 리튬 2018년 59.8% → 2024년 28.3%, RAG 2024년 7.3% 로 최근 연도일수록 낮다. 필터 코퍼스의 공존 0 쌍 중 필터 없는 코퍼스에서 공존 > 0 이 된 비율은 리튬 concepts 174/321(54.2%), 리튬 topics 6/38(15.8%), RAG topics 6/17(35.3%)이다(RAG concepts 는 공존 0 쌍이 없었다). 다만 그 쌍들의 필터 없는 코퍼스 lift 중앙값은 0.086·0.000·0.000 으로 여전히 가장 낮은 구간이다. "공존 0" 이라는 절댓값은 필터·코퍼스 크기에 좌우되지만 lift 순위의 아래쪽은 유지된다

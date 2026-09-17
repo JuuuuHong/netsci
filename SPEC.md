@@ -84,7 +84,8 @@ netsci/
       │  ├─ corpus.rs            # Work 모델, JSONL 입출력
       │  ├─ citation.rs          # 인용 그래프 + PageRank
       │  ├─ concept.rs           # 개념 동시출현 그래프 + 중심성
-      │  ├─ gaps.rs              # 공백 개념쌍 탐지
+      │  ├─ gaps.rs              # 공백 개념쌍 탐지, 매개 개념 후보 (2026-09-17 추가)
+      │  ├─ backtest.rs          # 연도 분할 검증 (2026-09-17 추가)
       │  ├─ top.rs               # 상위 N 개만 정렬 (2026-09-17 추가)
       │  └─ verify.rs            # 제목·초록 텍스트 검증 (2026-09-17 추가)
       ├─ benches/analysis.rs     # criterion 벤치마크, 합성 코퍼스 (2026-09-17 추가)
@@ -187,9 +188,13 @@ netsci fetch --query '"lithium metal anode"' \
 개념 동시출현 그래프의 가중 연결강도(weighted degree) 상위 N 개.
 열: `rank`, `concept`, `level`, `works`(등장 논문 수), `strength`(가중 연결강도), `top_neighbor`
 
-### 4.5 `netsci gaps --top 20 [--min-works 15] [--taxonomy topics] [--min-level 2] [--min-score 0.4]`
+### 4.5 `netsci gaps --top 20 [--min-works 15] [--taxonomy topics] [--min-level 2] [--min-score 0.4] [--bridges 0]`
 공백 개념쌍 (§5.4).
 열: `rank`, `concept_a`, `concept_b`, `works_a`, `works_b`, `observed`, `expected`(소수 2자리), `lift`(소수 3자리)
+
+- `--bridges K`(기본 0): K > 0 이면 쌍마다 매개 개념 후보 상위 K 개를 `bridges` 열로 붙인다 (§5.6). 셀은 `B (A와 공존|C와 공존)` 를 `; ` 로 이은 문자열이고 후보가 없으면 빈 칸. K = 0 이면 열이 없어 기존 출력과 바이트 단위로 같다
+
+> 추가 이유(2026-09-17): Swanson ABC 모델의 매개 개념 B 를 공존 통계만으로 제안해, 공백 쌍을 읽을 실마리를 준다.
 
 ### 4.6 `netsci verify --top 20 [--min-works 15] [--taxonomy concepts] [--min-level 2] [--min-score 0.4] [--alias "개념=표현"]...`
 공백 개념쌍 상위 N 개를 **제목·초록 텍스트 기준 공존**과 대조한다 (§5.5). 기본 분류는 **concepts** 다(§5.2).
@@ -208,6 +213,15 @@ netsci fetch --query '"lithium metal anode"' \
 열: `rank`, `id`, `year`, `tag_a`, `tag_b`, `title`, `snippet_a`, `snippet_b`, `total`, `url`, `label`(빈 칸 — 사람이 초록을 읽고 채운다)
 
 > 추가 이유(2026-09-17): verify 의 `co_mentioned` 가 실제로 "함께 다룸" 인지 사람이 표본을 읽어 정확도를 매기기 위해서다. 문자열 공존은 비교·부정 문장("unlike …")도 센다.
+
+### 4.8 `netsci backtest --split-year Y [--top 20] [--min-works 15] [--taxonomy topics] [--min-level 2] [--min-score 0.4] [--summary]`
+연도 분할 검증 (§5.7). stderr 에 train·test·연도 없는 작품 수를 한 줄로 알리고, 한쪽이 비면 경고한다.
+- 기본 출력: train 공존 0 인 쌍을 `gaps` 순위로 상위 N 개.
+  열: `rank`, `concept_a`, `concept_b`, `train_works_a`, `train_works_b`, `train_expected`(소수 2자리), `test_works_a`, `test_works_b`, `test_observed`, `test_expected`(소수 2자리), `test_lift`(소수 3자리, test 기대값 0 이면 빈 칸)
+- `--summary`: 집단 7행 — `top_N_gaps`, `train_lift = 0`, `train_lift (0, 0.5)`, `train_lift [0.5, 1)`, `train_lift [1, 2)`, `train_lift >= 2`, `all_candidates`.
+  열: `group`, `pairs`, `hits`, `hit_rate`, `evaluable`, `evaluable_hits`, `evaluable_hit_rate`, `median_test_lift`, `median_test_expected` (비율·lift 소수 3자리, 기대값 2자리, 분모가 0 이면 빈 칸)
+
+> 추가 이유(2026-09-17): 과거 시점의 공백 후보가 이후 논문에서 함께 태깅됐는지를 누수 없이 세어, 낮은 lift 가 시간이 지나도 유지되는 신호인지 확인한다.
 
 ---
 
@@ -259,6 +273,23 @@ PR_new[v] = (1 - d)/N  +  d * ( Σ_{u→v} PR[u]/outdeg(u)  +  dangling_sum/N )
 - **모수는 초록이 있는 작품만.** 제목만 있는 작품은 표현이 걸릴 확률 자체가 낮아 텍스트 기대값을 체계적으로 낮추므로 뺀다
 - `text_expected = text_a × text_b / N`. 판정: `text_expected < 3.0` 이면 `unverifiable`(표현이 본문에 드물어 판정 불가 — 별칭 필요), 아니면 `text_observed == 0` 이면 `absent_in_text`, 그 밖은 `co_mentioned`(공존 1편 이상). 하한 3.0 은 §5.4 와 같은 이유
 - `text_lift = text_observed / text_expected` (`text_expected` 가 0 이면 0). 판정은 바꾸지 않고, `co_mentioned` 중 기대에 비해 약한 공존을 읽는 쪽이 가려내도록 함께 출력한다
+
+### 5.6 매개 개념 후보 (`gaps --bridges`)
+공백 쌍 (A, C) 마다 후보 B 를 고른다 (Swanson ABC 모델의 B). N 은 작품 수, `lift(X, Y) = observed(X, Y) × N / (works(X) × works(Y))`.
+- 후보: B ≠ A, C, `works(B) >= min_works`, `observed(A, B) >= 3` 이고 `observed(B, C) >= 3`, `lift(A, B) > 1` 이고 `lift(B, C) > 1`
+- 순위: `min(lift(A, B), lift(B, C))` 내림차순 → `min(observed(A, B), observed(B, C))` 내림차순 → 이름 오름차순 → 개념 번호 오름차순
+- lift 비교는 N 이 공통이므로 `observed × (works × works)` 정수 교차곱으로 한다(u128)
+- 공존 수 대신 lift 를 쓰는 이유: 코퍼스 대부분에 붙는 허브 레이블은 공존 수가 어느 쌍과도 커서 거의 모든 쌍의 1위가 된다. 최솟값은 한쪽 간선만 강한 B 를 배제한다
+- 공존 3편 하한은 작은 수에서 lift 가 크게 흔들리는 것을 막는다(`MIN_EXPECTED` 와 같은 크기). 동시출현은 기전이 아니므로 B 는 읽을 실마리일 뿐이다
+
+### 5.7 연도 분할 검증 (`backtest`)
+- train = 연도 ≤ Y, test = 연도 > Y. 연도 없는 작품은 둘 다에서 뺀다
+- **누수 방지**: 레이블 필터·`min_works`·`expected`·후보 쌍(`expected >= 3`)·순위는 train 그래프로만 계산한다(§5.4 와 같은 규칙). test 그래프는 같은 필터로 따로 만들고 레이블 id 로 짝짓는다. `ConceptGraph::build` 는 작품 참조의 반복자를 받아 train·test 를 복사 없이 만든다
+- 쌍마다 `test_observed`, `test_expected = test_works_a × test_works_b / N_test`(한쪽이 test 에 없거나 N_test = 0 이면 0), `test_lift = test_observed / test_expected`(기대값 0 이면 없음)
+- hit = `test_observed >= 1`. 판정 가능(evaluable) = `test_expected >= 3`
+- train lift 구간(정수 비교): `observed = 0` / `2·observed·N < works_a·works_b` / `observed·N < works_a·works_b` / `observed·N < 2·works_a·works_b` / 그 밖
+- 요약의 `median_test_lift` 는 판정 가능 쌍, `median_test_expected` 는 모든 쌍의 중앙값(짝수 개면 가운데 두 값 평균)
+- test 공존은 "나중에 함께 태깅됐다" 일 뿐 가설 검증이 아니다. 흔한 레이블끼리는 test 기대값이 커서 공존이 쉽게 생기므로 기준선(`all_candidates`)·판정 가능 비율과 함께 읽는다
 
 ---
 
@@ -376,6 +407,8 @@ pub trait PrecisionCell { fn cell_with_precision(&self, precision: usize) -> Str
 | evidence | 초록 있는 논문만, 태그 여부, 고른 표본 추출, 비 ASCII 스니펫 경계 |
 | CLI 끝단 | 빌드된 바이너리 실행: stats JSON, CSV 이스케이프, `--taxonomy`, verify·evidence 기본 분류 concepts 와 경고, 잘못된 인자 종료 코드 2, 코퍼스 없음 안내 |
 | verify | 손으로 만든 코퍼스에서 text_a/text_b/text_observed/text_lift 손계산 대조, 단어 경계(`binders` ≠ `binder`), 괄호 한정어 제거, 별칭(유니코드 대소문자 포함), 초록 역색인 복원(위치 `usize::MAX` 포함), 옛 스키마 캐시 거부 |
+| 매개 개념 | 손으로 만든 40편 코퍼스: lift 최솟값 순서(공존이 더 많아도 lift 가 낮으면 뒤), 허브(lift = 1)·공존 3편 미만·한쪽 lift ≤ 1 제외, 동점 이름 순, A·C 순서 무관, `top`·`min_works`, 두 분류에서 같은 결과, `bridges` 열 셀 형식과 나머지 열이 `gaps` 와 같음, `--bridges 0` 헤더가 기존과 같음(CLI) |
+| backtest | 손으로 만든 코퍼스: train 통계가 train 만 떼어 돌린 `gaps` 와 같음(test·연도 없는 작품 누수 없음), test 에만 잦은 레이블·train 에서 `min_works` 미만인 레이블은 후보 아님, test 공존·기대값·lift 손계산, test 에 없는 레이블은 lift 없음, 분할 연도가 범위 밖, 집단 요약 수·빈 칸, lift 구간 경계, 중앙값, CLI 요약 헤더와 stderr 편수 |
 | 매크로 | §6.4 |
 
 ---

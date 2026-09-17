@@ -8,10 +8,11 @@
 
 이 접근은 문헌 기반 발견(literature-based discovery)의 Swanson ABC 모델과 가깝습니다.
 ABC 모델은 A–B 와 B–C 는 각각 다뤄졌는데 A–C 는 함께 다뤄지지 않은 조합에서, 매개 개념 B 를 거쳐 A–C 관계의 가설을 세웁니다.
-이 도구는 그중 **A–C 가 기대보다 함께 나오지 않는 후보**만 찾고, 매개 개념 B 는 제안하지 않습니다.
+이 도구는 그중 **A–C 가 기대보다 함께 나오지 않는 후보**를 찾고, `gaps --bridges` 로 A·C 양쪽에 기대보다 자주 함께 붙는 매개 개념 B 후보를 붙입니다(동시출현 통계일 뿐 기전은 아닙니다).
+`backtest` 는 과거 연도 논문으로 뽑은 후보가 이후 논문에서 함께 태깅됐는지 셉니다.
 
 - tokio 기반 순차 수집 (레이트리밋·재시도·페이지 단위 디스크 캐시, 끊겨도 이어받기, 일일 과금 한도 감시)
-- PageRank 직접 구현, 동시출현 기대값 대비 lift 로 공백 후보 점수화, 제목·초록 텍스트로 후보 검증
+- PageRank 직접 구현, 동시출현 기대값 대비 lift 로 공백 후보 점수화, 제목·초록 텍스트로 후보 검증, 연도 분할 검증
 - 출력 행 타입에 `#[derive(Report)]` 프로시저 매크로를 붙여 표·JSON·CSV 를 한 번에 지원
 - 멀티스테이지 Docker 이미지 (비루트 실행)
 
@@ -26,6 +27,11 @@ ABC 모델은 A–B 와 B–C 는 각각 다뤄졌는데 A–C 는 함께 다뤄
 - **RAG 인용 PageRank 1~3위는 닫힌 인용 고리입니다.** RAG 원 논문 → DPR → FiD → {DPR, RAG 원 논문} 세 편의 나가는 간선이 모두 고리 안을 향해 전체 점수의 약 49% 가 모입니다.
   OpenAlex 메타데이터 문제도 겹칩니다: RAG 원 논문 기록의 제목이 틀렸고, 964편 중 299편(31%)은 참조 목록이 비어 있습니다.
 - **분류 체계 품질은 분야마다 다릅니다.** concepts 는 리튬에서는 텍스트 검증에 쓸 만했지만, RAG 에서는 상위 10개 중 8개가 동음이의어 오분류였습니다.
+- **공백 후보는 시간이 지나도 대체로 공백으로 남지만, 나중에 채워질 조합을 고른다는 근거는 없습니다.** 인용 필터 없는 리튬 코퍼스를 2022년 이하(train)·이후(test)로 나누면
+  concepts 공백 후보 상위 20쌍이 test 에서 함께 태깅된 비율은 61.1%(판정 가능 18쌍 중 11쌍)로 전체 후보 94.2% 보다 낮고, train lift 구간이 높을수록 test lift 중앙값이 커집니다(0.181 → 2.616).
+  판정 가능한 쌍이 있는 분할 실행 7개가 모두 같은 방향입니다.
+- **"공존 0" 은 수집 조건에 민감합니다.** 피인용 20회 초과 리튬 코퍼스의 concepts 공존 0 쌍 321쌍 중 174쌍(54.2%)은 필터 없이 받은 코퍼스에서는 공존이 있습니다.
+  다만 그 쌍들의 lift 중앙값은 0.086 으로 여전히 가장 낮은 구간입니다.
 
 ## 파이프라인
 
@@ -44,10 +50,10 @@ ABC 모델은 A–B 와 B–C 는 각각 다뤄졌는데 A–C 는 함께 다뤄
                │                                │
       PageRank (d = 0.85)               가중 연결강도 · 공백 후보 (lift)
                │                                │
-   netsci stats · citations          netsci concepts · gaps
-                                                │  공백 후보 × 제목·초록 텍스트 공존
+   netsci stats · citations          netsci concepts · gaps (--bridges: 매개 개념 B)
+                                                │  공백 후보 × 제목·초록 텍스트 공존 / × 이후 연도 공존
                                                 ▼
-                                     netsci verify · evidence
+                                     netsci verify · evidence · backtest
 ```
 
 ## 빠른 시작
@@ -69,7 +75,8 @@ cargo run --release -p netsci -- gaps  --data data/li-anode --top 20 --format cs
 | `stats` | 작품 수, 연도 범위, 내부 인용 간선 수와 비율, 필터 후 고유 토픽·concept 수, 초록 있는 작품 수 |
 | `citations [--top N]` | 코퍼스 내부 인용 그래프 PageRank 상위 N 편 |
 | `concepts [--top N] [--taxonomy T] [--min-level L] [--min-score S]` | 동시출현 가중 연결강도 상위 N 개념 |
-| `gaps [--top N] [--min-works W] [--taxonomy T] [--min-level L] [--min-score S]` | 공백 개념쌍 |
+| `gaps [--top N] [--min-works W] [--taxonomy T] [--min-level L] [--min-score S] [--bridges K]` | 공백 개념쌍. `K > 0` 이면 쌍마다 매개 개념 후보 `bridges` 열 |
+| `backtest --split-year Y [--top N] [--min-works W] [--taxonomy T] [--summary]` | Y 년까지의 논문으로 뽑은 공백 후보가 이후 논문에서 함께 태깅됐는지 (`--summary` 는 집단별 요약) |
 | `verify [--top N] [--min-works W] [--taxonomy T] [--alias "개념=표현"]...` | 공백 후보 상위 N 쌍을 제목·초록 텍스트 공존과 대조 (`text_lift`, `verdict`) |
 | `evidence --a A --b B [--limit N] [--taxonomy T] [--alias "개념=표현"]...` | 두 표현이 제목·초록에 함께 나오는 논문 표본 (`label` 열은 사람이 채움) |
 
@@ -390,6 +397,139 @@ rank  concept                         level  works  strength  top_neighbor
 의미 있는 판정이 나오지 않습니다(예: `Generative grammar` 는 이름에서 뗀 `generative grammar` 가 초록에 0편).
 **자연과학 분야는 concepts + verify, 소프트웨어 분야는 topics 가 상대적으로 쓸 만했습니다.** 분류 체계의 품질이 분야마다 다릅니다.
 
+### 매개 개념 후보 — `gaps --bridges`
+
+공백 쌍 (A, C) 마다 B 후보를 매깁니다. 후보는 A·C 각각과 3편 이상 함께 붙고 두 간선 lift 가 모두 1 을 넘는 레이블이고,
+순위는 **두 lift 중 작은 값**입니다. 공존 수로 매기면 코퍼스 대부분에 붙는 허브(`Electrolyte`, `Topic Modeling`)가 거의 모든 쌍의 1위가 되기 때문입니다.
+셀은 `B (A와 공존|C와 공존)` 입니다. 예시로 싣는 쌍은 결과를 보기 전에 정했습니다(각 분야에서 쓸 만했던 분류의 상위 3쌍, `docs/decisions.md`).
+
+```
+netsci gaps --taxonomy concepts --top 3 --bridges 3 --data data/li-anode-phrase
+```
+```
+rank  concept_a           concept_b          works_a  works_b  observed  expected  lift   bridges
+----  ------------------  -----------------  -------  -------  --------  --------  -----  -----------------------------------------------------------------------------
+1     Faraday efficiency  Solid-state        614      194      0         26.84     0.000  Metal (225|66); Electrical conductor (13|7); Electrolyte (416|118)
+2     Fast ion conductor  Stripping (fiber)  445      192      0         19.25     0.000  Analytical Chemistry (journal) (9|4); Alkali metal (8|3); Covalent bond (4|3)
+3     Metal               Renewable energy   1230     53       0         14.69     0.000
+```
+```
+netsci gaps --top 3 --bridges 3 --data data/rag-phrase
+```
+```
+rank  concept_a                                            concept_b                                          works_a  works_b  observed  expected  lift   bridges
+----  ---------------------------------------------------  -------------------------------------------------  -------  -------  --------  --------  -----  ----------------------
+1     Artificial Intelligence in Healthcare and Education  Multimodal Machine Learning Applications           157      108      0         17.59     0.000
+2     Machine Learning in Healthcare                       Multimodal Machine Learning Applications           75       108      0         8.40      0.000  Topic Modeling (43|91)
+3     Natural Language Processing Techniques               Radiomics and Machine Learning in Medical Imaging  302      26       0         8.15      0.000
+```
+
+- 리튬 2위의 첫 B `Analytical Chemistry (journal)` 은 학술지 이름 concept 로, 오분류가 매개 개념으로도 올라옵니다.
+- RAG 2위의 B `Topic Modeling` 은 964편 중 490편에 붙는 허브입니다. 허브라도 A·C 양쪽에 기대보다 조금 더 붙으면 lift > 1 조건을 통과합니다.
+- `gaps --top 20 --bridges 3` 에서 B 가 하나라도 붙은 쌍은 리튬 concepts 18쌍, RAG topics 9쌍, 리튬 topics 4쌍입니다. topics 는 논문당 3자리라 A·C 와 함께 붙을 B 의 자리가 좁습니다.
+
+### 시간 분할 검증 — `backtest`
+
+분할 연도 Y 까지의 논문(train)만으로 레이블 필터·`min_works`·기대값·공백 후보를 정하고, 이후 논문(test)에서 두 레이블이 함께 붙었는지(hit)와 test 기준 lift 를 셉니다.
+test 기대값이 3 이상인 쌍만 "판정 가능" 으로 따로 셉니다. 흔한 레이블끼리는 기대값이 커서 우연히도 함께 붙기 쉽기 때문입니다.
+
+**설계는 결과를 보기 전에 정했습니다** (`docs/decisions.md`). 분할 연도는 누적 비율이 처음 50% 이상이 되는 연도(그 연도가 마지막이면 앞 연도)이고,
+네 코퍼스 × 두 분류를 `--top 20 --summary` 기본값으로 모두 실행했습니다. **주 분석은 인용 필터 없는 코퍼스**입니다.
+`cited_by_count > 20` 은 2026년 시점 피인용으로 고른 것이라, 필터 코퍼스의 train 논문은 분할 뒤에 쌓인 인용으로 선택되기 때문입니다.
+필터 없는 코퍼스는 같은 검색어·연도로 2026-09-17 에 받았습니다(`--filter "publication_year:2018-2024"`, 리튬 9,934편·50페이지, RAG 10,681편·54페이지, 둘 다 중복 0, `reported_total` 과 편수 일치).
+
+```
+netsci backtest --split-year 2022 --taxonomy concepts --summary --data data/li-anode-phrase-all
+```
+```
+train 5743편(연도 <= 2022) · test 4191편(연도 > 2022) · 연도 없음 0편 제외
+group                pairs  hits  hit_rate  evaluable  evaluable_hits  evaluable_hit_rate  median_test_lift  median_test_expected
+-------------------  -----  ----  --------  ---------  --------------  ------------------  ----------------  --------------------
+top_20_gaps          20     11    0.550     18         11              0.611               0.140             5.16
+train_lift = 0       384    162   0.422     110        63              0.573               0.181             2.16
+train_lift (0, 0.5)  1079   811   0.752     670        571             0.852               0.386             3.92
+train_lift [0.5, 1)  1509   1346  0.892     984        957             0.973               0.803             4.73
+train_lift [1, 2)    1470   1408  0.958     1014       1012            0.998               1.343             5.21
+train_lift >= 2      431    426   0.988     226        226             1.000               2.616             3.17
+all_candidates       4873   4153  0.852     3004       2829            0.942               0.915             4.10
+```
+```
+netsci backtest --split-year 2023 --summary --data data/rag-phrase-all
+```
+```
+train 2053편(연도 <= 2023) · test 8628편(연도 > 2023) · 연도 없음 0편 제외
+group                pairs  hits  hit_rate  evaluable  evaluable_hits  evaluable_hit_rate  median_test_lift  median_test_expected
+-------------------  -----  ----  --------  ---------  --------------  ------------------  ----------------  --------------------
+top_20_gaps          20     10    0.500     16         8               0.500               0.038             8.11
+train_lift = 0       61     24    0.393     36         16              0.444               0.000             4.46
+train_lift (0, 0.5)  44     34    0.773     36         31              0.861               0.227             9.72
+train_lift [0.5, 1)  25     25    1.000     25         25              1.000               0.810             27.06
+train_lift [1, 2)    28     28    1.000     28         28              1.000               1.764             44.43
+train_lift >= 2      5      5     1.000     2          2               1.000               8.560             2.34
+all_candidates       163    116   0.712     127        102             0.803               0.461             10.56
+```
+
+실행 8개 요약 — 비율은 판정 가능 쌍 기준(hit / 판정 가능), `test_lift` 중앙값은 train lift 구간 `0 · (0,0.5) · [0.5,1) · [1,2) · ≥2` 순:
+
+| 코퍼스 (분할 연도) | 분류 | train / test | 공백 후보 상위 20 | train lift = 0 전체 | 전체 후보 | `test_lift` 중앙값 |
+|---|---|---|---|---|---|---|
+| 리튬, 필터 없음 (2022) | concepts | 5,743 / 4,191 | 0.611 (11/18) | 0.573 (63/110) | 0.942 (2,829/3,004) | 0.181 · 0.386 · 0.803 · 1.343 · 2.616 |
+| 리튬, 필터 없음 (2022) | topics | 5,743 / 4,191 | 0.100 (2/20) | 0.079 (3/38) | 0.698 (111/159) | 0.000 · 0.172 · 0.734 · 1.138 · 3.108 |
+| RAG, 필터 없음 (2023) | topics | 2,053 / 8,628 | 0.500 (8/16) | 0.444 (16/36) | 0.803 (102/127) | 0.000 · 0.227 · 0.810 · 1.764 · 8.560 |
+| RAG, 필터 없음 (2023) | concepts | 2,053 / 8,628 | 0.714 (5/7) | 0.750 (6/8) | 0.962 (152/158) | 0.295 · 0.728 · 0.988 · 1.588 · 3.542 |
+| 리튬, 인용 > 20 (2021) | concepts | 2,246 / 2,192 | 0.789 (15/19) | 0.705 (43/61) | 0.956 (1,582/1,655) | 0.237 · 0.453 · 0.829 · 1.261 · 2.644 |
+| 리튬, 인용 > 20 (2021) | topics | 2,246 / 2,192 | 0.333 (4/12) | 0.333 (4/12) | 0.786 (44/56) | 0.000 · 0.082 · 0.697 · 1.113 · 3.163 |
+| RAG, 인용 > 20 (2023) | topics | 331 / 633 | 0.000 (0/1) | 0.000 (0/1) | 0.833 (10/12) | 0.000 · 0.050 · 0.785 · 2.225 · – |
+| RAG, 인용 > 20 (2023) | concepts | 331 / 633 | – (0/0) | – (0/0) | 1.000 (1/1) | – · – · 1.065 · – · – |
+
+- **train lift 가 낮은 쌍은 test 에서도 덜 함께 붙습니다.** 판정 가능한 쌍이 있는 7개 실행 모두 구간이 올라갈수록 `test_lift` 중앙값이 커집니다. lift 는 한 시기의 우연이 아니라 시기를 넘어 유지되는 신호입니다.
+- **공백 후보가 나중에 채워지는 비율은 기준선보다 낮습니다.** 문헌 기반 발견의 평가 방식(나중에 연결되는 조합을 먼저 맞히는가)으로 보면 이 순위는 그런 조합을 고르지 못했습니다. 이 도구의 lift 는 "앞으로 함께 연구될 조합" 예측기로 검증되지 않았습니다.
+  같은 공존 0 쌍끼리 비교하면 상위 20 은 비슷하거나 조금 높지만(리튬 concepts 0.611 대 0.573, RAG topics 0.500 대 0.444, RAG concepts 0.714 대 0.750), 상위 20 은 기대값이 큰 쌍부터 뽑으므로 이 차이는 기대값 크기로도 설명됩니다.
+- **유지된다고 실제 공백인 것은 아닙니다.** 가장 잘 유지된 리튬 topics(0.100)는 앞서 본 토픽 자리 포화 산물이라, 배정 방식이 바뀌지 않는 한 계속 유지됩니다.
+- test 공존은 "가설이 맞았다" 가 아니라 "이후 논문에 두 태그가 함께 붙었다" 입니다. 필터 코퍼스의 RAG 는 train 이 331편이라 후보가 거의 없고, RAG 는 test 가 2024년 한 해입니다.
+  RAG 필터 없음 concepts 는 test 8,628편인데 `test_expected` 중앙값이 1.07 이라 951쌍 중 158쌍만 판정 가능했습니다.
+
+모든 실행 명령:
+```
+for run in li-anode-phrase-all:2022 rag-phrase-all:2023 li-anode-phrase:2021 rag-phrase:2023; do
+  for taxonomy in topics concepts; do
+    netsci backtest --split-year ${run#*:} --taxonomy $taxonomy --top 20 --summary --data data/${run%%:*}
+  done
+done
+```
+
+### 인용 필터의 영향
+
+위 두 분야 결과(피인용 20회 초과)를 같은 검색어·연도의 필터 없는 코퍼스와 비교했습니다.
+`stats` 와 `gaps --top 100000 --format csv`(두 분류)를 네 코퍼스에 돌리고, 저장소 밖 짧은 스크립트로 `(concept_a, concept_b)` 이름 쌍을 이었습니다.
+
+```
+netsci stats --data data/li-anode-phrase-all
+netsci gaps --top 100000 --format csv --data data/li-anode-phrase-all                        # topics
+netsci gaps --taxonomy concepts --top 100000 --format csv --data data/li-anode-phrase-all    # concepts
+# RAG(data/rag-phrase-all)와 필터 코퍼스(data/li-anode-phrase, data/rag-phrase)도 같은 명령
+```
+
+| | 리튬 인용 > 20 | 리튬 필터 없음 | RAG 인용 > 20 | RAG 필터 없음 |
+|---|---|---|---|---|
+| `works` | 4,438 | 9,934 | 964 | 10,681 |
+| `internal_ratio` | 0.0967 | 0.1065 | 0.0424 | 0.0632 |
+| `topics` · `concepts` | 253 · 1,820 | 575 · 2,844 | 334 · 964 | 1,117 · 3,474 |
+
+필터 코퍼스는 필터 없는 코퍼스의 부분집합이었고(id 기준 리튬 4,438/4,438, RAG 964/964), 최근 연도일수록 적게 남습니다.
+필터 코퍼스에 남은 비율은 리튬 2018년 59.8% → 2021년 55.0% → 2024년 28.3%, RAG 2021년 22.0% → 2023년 13.4% → 2024년 7.3% 입니다.
+
+| 분야 · 분류 | 필터 코퍼스 공존 0 쌍 | 필터 없으면 공존 > 0 | 그 쌍들의 필터 없는 lift 중앙값 | (비교) 필터 lift [0.5, 1) 쌍의 필터 없는 lift 중앙값 | 필터 상위 20쌍 중 필터 없는 상위 20 에 남음 · 공존 > 0 |
+|---|---|---|---|---|---|
+| 리튬 · concepts | 321 | 174 (54.2%) | 0.086 | 0.788 | 5 · 15 |
+| 리튬 · topics | 38 | 6 (15.8%) | 0.000 | 0.742 | 15 · 4 |
+| RAG · topics | 17 | 6 (35.3%) | 0.000 | 0.830 | 6 · 9 |
+| RAG · concepts | 0 | – | – | 1.101 | 0 · 20 |
+
+- **공존 0 이라는 절댓값은 수집 조건에 따라 바뀝니다.** 리튬 concepts 는 공존 0 쌍의 절반 넘게, RAG topics 는 3분의 1 이 필터 없는 코퍼스에서 공존이 생깁니다. 코퍼스가 2.2배(리튬)·11배(RAG) 커져 공존 기회 자체가 늘어난 효과도 섞여 있습니다.
+- **lift 순위의 아래쪽은 유지됩니다.** 그 쌍들의 필터 없는 lift 중앙값은 0.086·0.000·0.000 으로, 필터 코퍼스에서 lift [0.5, 1) 이던 쌍(0.742~0.830)보다 훨씬 낮습니다.
+- 리튬 topics 상위 20쌍은 15쌍이 필터 없는 코퍼스 상위 20 에 그대로 남습니다(토픽 자리 포화는 수집 조건과 무관합니다). 리튬 concepts 는 5쌍만 남고 15쌍은 공존이 생깁니다.
+
 ## 설계 결정
 
 명세(`SPEC.md`)에 없던 선택은 모두 [`docs/decisions.md`](docs/decisions.md) 에 기록했습니다. 요약:
@@ -401,6 +541,7 @@ rank  concept                         level  works  strength  top_neighbor
 - **derive 는 타입을 추측하지 않습니다** — 매크로는 `<필드 타입 as netsci_report::Cell>::cell(..)` 호출만 만들고, 어떤 타입이 셀이 되는지·`precision` 을 받는지는 `Cell`·`PrecisionCell` 트레이트 구현으로 컴파일러가 판정합니다. 타입 별칭(`type S = Option<f64>`)도 실제 타입대로 처리되고, 문자열에 `precision` 을 붙이면 필드 타입 위치에 컴파일 에러가 납니다.
 - **불변식이 있는 그래프는 필드를 숨깁니다** — `CitationGraph`·`ConceptGraph` 는 `build` 로만 만들고 읽기 전용 접근자만 둡니다. PageRank 는 `&CitationGraph` 를 받아 범위 밖 간선 같은 잘못된 입력을 타입으로 배제합니다.
 - **상위 N 만 정렬** — 순위 명령은 전체 정렬 대신 `select_nth_unstable_by` 로 앞 N 개를 가른 뒤 그 부분만 정렬합니다. 비교를 전순서로 만들어(이름이 같은 개념은 번호로) 출력은 전체 정렬과 같습니다.
+- **시간 분할은 train 만으로 계산합니다** — `backtest` 는 레이블 필터·`min_works`·기대값·후보를 분할 연도까지의 논문으로만 정하고, test 는 레이블 id 로만 짝짓습니다. 분할 연도 규칙·실행 목록·매개 개념 점수는 결과를 보기 전에 `docs/decisions.md` 에 적었습니다.
 - **현재 스레드 런타임** — 비동기는 `reqwest` 요청과 대기에만 쓰고, cursor 페이지네이션은 본질적으로 순차라 워커 스레드 풀 없이 `current_thread` 로 돌립니다. `works.jsonl` 쓰기 같은 블로킹 입출력은 `spawn_blocking` 으로 보냅니다.
 
 ## 벤치마크
@@ -428,8 +569,9 @@ rank  concept                         level  works  strength  top_neighbor
   RAG 코퍼스처럼 나가는 간선이 모두 안쪽을 향하는 닫힌 고리가 점수를 붙잡아 인용 수와 동떨어진 순위가 나올 수 있습니다.
 - **PageRank 는 코퍼스 안 나가는 간선 수로만 점수를 나눕니다.** 참조 대부분이 코퍼스 밖인 논문은 받은 점수를 안쪽 몇 안 되는 논문에 모두 넘깁니다
   (RAG 원 논문은 참조 59편 중 코퍼스 안이 DPR 하나라 넘기는 점수 전부가 DPR 로 갑니다). 출판 연도 앞쪽을 자른 탓에 첫해 논문은 나가는 간선이 거의 없어 상위에 몰립니다.
-- **수집 조건 `cited_by_count > 20` 은 생존 편향을 만듭니다.** 적게 인용된 초기 논문, 특히 다른 분야에서 먼저 시도한 논문이 빠지고,
-  인용이 쌓일 시간이 짧은 최근 연도 논문은 덜 들어옵니다.
+- **수집 조건 `cited_by_count > 20` 은 결과를 바꿉니다.** 필터 코퍼스는 필터 없는 코퍼스의 부분집합인데 최근 연도일수록 적게 남고(2024년 리튬 28.3%, RAG 7.3%),
+  필터 코퍼스의 공존 0 쌍 중 리튬 concepts 54.2%, RAG topics 35.3% 는 필터 없이 받으면 공존이 생깁니다(lift 순위의 아래쪽은 유지, 위 "인용 필터의 영향").
+  앞쪽 실행 결과(`stats`·`citations`·`gaps`·`verify`)는 필터 코퍼스 기준이라 이 영향을 그대로 받습니다. 필터 없는 코퍼스도 OpenAlex 전문 검색이 잡은 범위일 뿐입니다.
 - **코퍼스 경계가 결과를 좌우합니다.** 검색어를 따옴표로 묶지 않으면 리튬 코퍼스가 26,685편으로 커지며 광촉매·가스 센서 토픽 논문이 섞였습니다.
   OpenAlex 검색은 전문을 보므로 제목·초록에 검색 구가 나오는 논문은 리튬 862편, RAG 252편뿐이고, 제목·초록만 읽는 `verify` 와 모집단이 다릅니다.
   수집을 늘린다고 그래프가 촘촘해지지도 않았습니다(따옴표 없는 코퍼스의 내부 인용 비율은 16,200편 시점 11.63% → 전량 8.22%).
@@ -448,7 +590,11 @@ rank  concept                         level  works  strength  top_neighbor
 - **`lift` 가 낮다고 연구 가치가 있다는 뜻은 아닙니다 — 단지 후보일 뿐입니다.** 태그 기준 공존 0 은 "함께 다뤄지지 않았다" 가 아니라
   "함께 태깅되지 않았다" 는 뜻입니다. 위 기준선에서 태그 공존 0 인 쌍은 텍스트에서도 덜 함께 나오는 경향이 있지만(`text_lift` 중앙값 0.63) 0 이라는 숫자만큼 극단적이지는 않으므로,
   `verify` 로 제목·초록과 대조하고 `evidence` 로 원문 표본을 읽어 확인해야 합니다.
-- **시간 검증을 하지 않았습니다.** 문헌 기반 발견에서는 과거 시점의 후보가 이후 실제로 함께 연구됐는지로 방법을 평가하지만, 여기서 나온 후보가 나중에 공존하게 됐는지는 확인하지 않았습니다.
+- **시간 분할 검증은 "낮은 공존이 유지되는가" 까지만 보여 줍니다.** `backtest` 에서 공백 후보가 이후 함께 태깅되는 비율은 기준선보다 낮았고,
+  이후 공존은 가설이 맞았다는 뜻이 아니라 두 태그가 함께 붙었다는 뜻입니다. 분할은 코퍼스마다 연도 하나(누적 50% 규칙)로만 했고, RAG 는 test 가 2024년 한 해입니다.
+  나중에 연결될 조합을 더 잘 고르는 점수가 있는지(다른 점수와의 비교)는 확인하지 않았습니다.
+- **매개 개념 후보는 동시출현 통계일 뿐입니다.** B 는 A·C 와 함께 태깅된 정도로만 고르며 A→B→C 의 기전을 뜻하지 않습니다.
+  lift > 1 조건으로도 허브가 남을 수 있고(RAG 2위의 `Topic Modeling`, 964편 중 490편), concepts 오분류가 B 로 올라옵니다(`Analytical Chemistry (journal)`).
 - **`verify`·`evidence` 는 기본 분류가 concepts 입니다.** 텍스트 검증은 레이블 이름을 제목·초록에서 찾는데, 토픽 이름은
   `Advanced Battery Materials and Technologies` 같은 구문이라 본문에 그대로 나오는 일이 드물어 topics 로는 대부분 `unverifiable` 이 됩니다.
   `--taxonomy topics` 를 직접 주면 경고를 내며, 이때는 `--alias` 로 표현을 더해야 합니다. 반대로 concepts 의 오분류 이름도
