@@ -191,6 +191,9 @@ fn 잘못된_인자는_종료_코드_2() {
     assert_eq!(out.status.code(), Some(2));
     let out = netsci(&["verify", "--alias", "no-equals-sign"]);
     assert_eq!(out.status.code(), Some(2));
+    // limit 0 은 네트워크에 닿기 전에 인자 검사에서 거절된다
+    let out = netsci(&["fetch", "--query", "x", "--limit", "0"]);
+    assert_eq!(out.status.code(), Some(2));
 }
 
 #[test]

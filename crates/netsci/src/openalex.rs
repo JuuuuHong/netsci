@@ -245,13 +245,20 @@ impl WorksClient for HttpClient {
         let mut attempt = 0;
         loop {
             self.throttle().await;
-            let response = self.http.get(&self.base_url).query(&params).send().await?;
+            // reqwest 오류의 Display 는 요청 URL 을 포함하므로 api_key 가 새지 않게 URL 을 뗀다
+            let response = self
+                .http
+                .get(&self.base_url)
+                .query(&params)
+                .send()
+                .await
+                .map_err(reqwest::Error::without_url)?;
             let status = response.status();
             let headers = response.headers().clone();
 
             if status.is_success() {
                 return Ok(FetchedPage {
-                    body: response.text().await?,
+                    body: response.text().await.map_err(reqwest::Error::without_url)?,
                     cost_usd: header_f64(&headers, "x-ratelimit-cost-usd"),
                     remaining_usd: header_f64(&headers, "x-ratelimit-remaining-usd"),
                 });

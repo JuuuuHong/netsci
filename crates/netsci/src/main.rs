@@ -89,8 +89,8 @@ enum Command {
         /// OpenAlex filter 문자열 (예: "publication_year:2018-2024,cited_by_count:>20")
         #[arg(long)]
         filter: Option<String>,
-        /// 최대 작품 수
-        #[arg(long, default_value_t = 2000)]
+        /// 최대 작품 수 (1 이상. 0 이면 기존 works.jsonl 을 빈 파일로 덮어쓰게 되므로 막는다)
+        #[arg(long, default_value_t = 2000, value_parser = parse_limit)]
         limit: usize,
     },
     /// 코퍼스 개요
@@ -297,6 +297,17 @@ fn warn_unused_aliases(aliases: &[Alias], names: &[&str]) {
                 alias.concept, alias.term
             );
         }
+    }
+}
+
+/// `--limit` 은 1 이상만 받는다. clap 의 `range` 는 `usize` 에 쓸 수 없어 직접 검사한다.
+fn parse_limit(value: &str) -> Result<usize, String> {
+    match value.trim().parse::<usize>() {
+        Ok(0) => {
+            Err("0 이면 기존 works.jsonl 을 빈 파일로 덮어쓰므로 1 이상이어야 한다".to_string())
+        }
+        Ok(n) => Ok(n),
+        Err(_) => Err(format!("`{value}` 는 0 이상의 정수가 아니다")),
     }
 }
 

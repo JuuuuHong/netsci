@@ -165,3 +165,27 @@ async fn 한도가_소진된_429_는_재시도하지_않는다() {
     );
     assert_eq!(log.lock().unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn 연결_오류_메시지에_api_key_가_드러나지_않는다() {
+    // 포트를 잡았다가 바로 놓아 연결이 거절되는 주소를 만든다
+    let port = {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let url = format!("http://127.0.0.1:{port}/works");
+    let mut client = HttpClient::with_base_url(&url, Some("SECRET_TEST_KEY".to_string())).unwrap();
+    let err = client.fetch_page(&request()).await.unwrap_err();
+    assert!(matches!(err, OpenAlexError::Http(_)), "{err:?}");
+
+    // anyhow 의 `{:#}` 처럼 원인 사슬 전체를 이어 붙여 본다
+    let mut chain = Vec::new();
+    let mut source: Option<&dyn std::error::Error> = Some(&err);
+    while let Some(e) = source {
+        chain.push(e.to_string());
+        source = e.source();
+    }
+    for text in [format!("{err}"), format!("{err:?}"), chain.join(": ")] {
+        assert!(!text.contains("SECRET_TEST_KEY"), "{text}");
+    }
+}
