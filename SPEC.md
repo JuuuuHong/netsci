@@ -1,5 +1,7 @@
 # netsci — 구현 명세
 
+> 초기 명세이며, 이후 변경은 `docs/decisions.md` 에 기록한다.
+
 > OpenAlex 논문 메타데이터로 **인용 네트워크**와 **개념 동시출현 네트워크**를 만들고,
 > "각자는 자주 등장하는데 기대보다 함께 등장하지 않는 개념 쌍"을 찾고, 그 결과를 원자료로 검증하는 Rust CLI.
 
@@ -74,10 +76,13 @@ netsci/
       │  ├─ main.rs              # clap 파싱 → 명령 실행만
       │  ├─ lib.rs
       │  ├─ openalex.rs          # API 클라이언트, 응답 모델
+      │  ├─ fetch.rs             # 페이지 캐시·query.json·works.jsonl 쓰기 (2026-09-16 분리)
+      │  ├─ commands.rs          # 명령별 출력 행 계산 (2026-09-16 분리)
       │  ├─ corpus.rs            # Work 모델, JSONL 입출력
       │  ├─ citation.rs          # 인용 그래프 + PageRank
       │  ├─ concept.rs           # 개념 동시출현 그래프 + 중심성
-      │  └─ gaps.rs              # 공백 개념쌍 탐지
+      │  ├─ gaps.rs              # 공백 개념쌍 탐지
+      │  └─ verify.rs            # 제목·초록 텍스트 검증 (2026-09-17 추가)
       └─ tests/
          ├─ fixtures/works_page.json   # 실제 OpenAlex 응답 (이미 들어 있음)
          └─ *.rs
@@ -150,7 +155,7 @@ x-ratelimit-remaining-usd: 0.099
 ### 4.1 `netsci fetch`
 
 ```
-netsci fetch --query "lithium metal anode" \
+netsci fetch --query '"lithium metal anode"' \
              [--filter "publication_year:2018-2024,cited_by_count:>20"] \
              [--limit 2000] [--data data/li-anode]
 ```
@@ -189,7 +194,7 @@ netsci fetch --query "lithium metal anode" \
 - `--taxonomy topics` 를 직접 주면 토픽 이름이 본문과 거의 일치하지 않는다는 경고를 stderr 에 낸다
 - 결과 쌍의 어느 레이블 이름과도 맞지 않는 `--alias` 는 쓰이지 않았다고 stderr 에 경고한다
 
-> 추가 이유(2026-09-17): 공백 후보 상위가 태깅 누락의 부산물이라는 것을 사례 몇 개가 아니라 모든 후보에 대해 수치로 보이기 위해서다.
+> 추가 이유(2026-09-17): 태그 공백이 텍스트에서도 나타나는지 사례 몇 개가 아니라 모든 후보에 대해 수치로 확인하기 위해서다.
 
 ### 4.7 `netsci evidence --a "개념 A" --b "개념 B" [--limit 30] [--taxonomy concepts] [--alias ...]`
 두 표현이 제목·초록에 함께 나오는 논문 표본. 해당 논문이 `limit` 보다 많으면 번호 순으로 고르게 건너뛰며 뽑는다(결정적).
@@ -319,7 +324,7 @@ impl ::netsci_report::Report for GapRow {
 
 ### 6.4 매크로 테스트
 - `netsci-report` 쪽 단위 테스트: 위 `GapRow` 의 `headers()`/`row()` 결과 검증, `Option` None/Some, 제네릭 구조체
-- `trybuild` compile-fail 3건: 튜플 구조체, 알 수 없는 속성, `skip` + `rename` 동시 사용. `.stderr` 파일 포함
+- `trybuild` compile-fail 6건: 튜플 구조체, 알 수 없는 속성, `skip` + `rename` 동시 사용(명세 3건) + `skip = …` 값, 문자열·정수 필드의 `precision`, 범위 밖 `precision`(2026-09-17 추가). `.stderr` 파일 포함
 
 ---
 
@@ -332,7 +337,7 @@ impl ::netsci_report::Report for GapRow {
 - 사용 예 (README 에 그대로):
   ```
   docker build -t netsci .
-  docker run --rm -v "$PWD/data:/app/data" netsci fetch --query "lithium metal anode" --limit 2000 --data data/li-anode
+  docker run --rm -v "$PWD/data:/app/data" netsci fetch --query '"lithium metal anode"' --limit 2000 --data data/li-anode
   docker run --rm -v "$PWD/data:/app/data" netsci gaps --data data/li-anode --top 20
   ```
 
@@ -390,7 +395,7 @@ impl ::netsci_report::Report for GapRow {
 1. 한 줄 소개 + 동기: *"과학 문헌에서 기대보다 함께 등장하지 않는 개념 조합을 네트워크 구조로 찾고, 그 결과가 진짜인지 원자료로 확인한다"* ("함께 연구되지 않았다" 고 단정하지 않는다)
 2. 파이프라인 그림 (fetch → works.jsonl → citation / concept graph → gaps)
 3. 빠른 시작 (cargo, docker)
-4. **실제 실행 결과** — 한 분야(기본: lithium metal anode, 2018~2024, 피인용 20회 초과) 로 `stats`, `citations`, `gaps` 출력을 붙인다. 숫자는 실제 실행값만
+4. **실제 실행 결과** — 두 분야(자연과학: `"lithium metal anode"`, 소프트웨어: `"retrieval-augmented generation"`, 둘 다 2018~2024, 피인용 20회 초과) 로 `stats`, `citations`, `gaps` 등의 출력을 붙인다. 숫자는 실제 실행값만 (초안의 한 분야에서 2026-09-17 변경)
 5. 설계 결정 요약 (`docs/decisions.md` 링크)
 6. **한계** — 최소한 다음을 쓴다
    - 코퍼스 내부 인용만 그래프에 들어가 성기다 (`stats` 의 내부 비율 수치 인용)
@@ -402,8 +407,8 @@ impl ::netsci_report::Report for GapRow {
 
 ## 11. 완료 정의
 
-- [ ] §9 의 8단계 커밋이 모두 존재
+- [x] §9 의 8단계 커밋이 모두 존재
 - [ ] `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` 통과
-- [ ] 라이브러리 코드에 `unwrap`/`expect`/`todo!`/`unimplemented!` 없음
+- [x] 라이브러리 코드에 `unwrap`/`expect`/`todo!`/`unimplemented!` 없음
 - [ ] `docker build` 성공, 컨테이너로 `fetch` → `gaps` 가 실제로 동작
 - [ ] README 의 실행 결과가 실제 출력과 일치

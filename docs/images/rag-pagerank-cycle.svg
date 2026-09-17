@@ -3,7 +3,7 @@
 <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8c959f"/></marker>
 <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#cf222e"/></marker></defs>
 <rect width="900" height="480" fill="#ffffff"/>
-<text x="30" y="40" font-size="20" font-weight="700">RAG 코퍼스(964편) — 인용 8회인 DPR 이 PageRank 1위인 이유</text>
+<text x="30" y="40" font-size="20" font-weight="700">RAG 코퍼스(964편) — 닫힌 인용 고리가 PageRank 1~3위를 차지하는 이유</text>
 <text x="30" y="66" font-size="13" fill="#57606a">화살표 A → B = A 가 B 를 인용. 코퍼스 안의 간선만 표시. 괄호: 코퍼스 내 피인용 수 · PageRank 순위와 값</text>
 <rect x="30" y="115" width="120" height="34" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
 <text x="90" y="137" font-size="12" text-anchor="middle" fill="#8c959f">논문</text>
@@ -26,7 +26,7 @@
 <rect x="268" y="195" width="220" height="90" rx="10" fill="#fff8c5" stroke="#bf8700" stroke-width="2"/>
 <text x="378.0" y="225" font-size="15" font-weight="700" text-anchor="middle">RAG 원 논문 (Lewis 외)</text>
 <text x="378.0" y="247" font-size="12" text-anchor="middle" class="m" fill="#57606a">(275회 · 3위 0.136)</text>
-<text x="378.0" y="269" font-size="12" text-anchor="middle" fill="#cf222e">나가는 간선 1개</text>
+<text x="378.0" y="269" font-size="12" text-anchor="middle" fill="#cf222e">나가는 간선 1개 (참조 59편 중)</text>
 <rect x="620" y="95" width="230" height="90" rx="10" fill="#ffebe9" stroke="#cf222e" stroke-width="2"/>
 <text x="735.0" y="125" font-size="15" font-weight="700" text-anchor="middle">DPR</text>
 <text x="735.0" y="147" font-size="12" text-anchor="middle" class="m" fill="#57606a">(8회 · 1위 0.188)</text>
@@ -39,5 +39,5 @@
 <path d="M700,188 C682,235 682,258 700,301" fill="none" stroke="#cf222e" stroke-width="2.5" marker-end="url(#r)"/>
 <path d="M770,302 C788,258 788,235 770,189" fill="none" stroke="#cf222e" stroke-width="2.5" marker-end="url(#r)"/>
 <line x1="616" y1="345" x2="490" y2="268" stroke="#cf222e" stroke-width="2.5" marker-end="url(#r)"/>
-<text x="30" y="466" font-size="13">많은 논문이 RAG 원 논문으로 보낸 점수가, 나갈 곳이 좁은 세 논문의 고리(빨간 화살표)를 돌며 DPR·FiD 에 쌓인다.</text>
+<text x="30" y="466" font-size="13">세 논문의 나가는 간선이 모두 고리 안을 향해 점수가 빠져나가지 못하고, 많은 논문이 RAG 원 논문에 보낸 점수가 DPR·FiD 로 흘러 고인다.</text>
 </svg>
