@@ -188,6 +188,10 @@ rank  concept_a                                    concept_b                    
 concepts 는 논문당 개수 제한이 없어 공백 후보를 더 촘촘히 뽑지만, 동음이의어 오분류가 섞입니다
 (`concepts --taxonomy concepts` 1위가 4,438편 중 2,967편에 붙은 `Lithium (medication)`).
 `verify` 는 `gaps --taxonomy concepts` 상위 20쌍을 제목·초록 텍스트 공존과 대조합니다 (초록이 있는 작품 3,581편):
+
+![verify 실행 결과 — 19위는 태그 공존 0, 텍스트 공존 90편](docs/images/verify-li-anode.png)
+
+위 그림은 아래 실제 출력을 렌더링하고 19위 행과 판정 색만 강조한 것입니다.
 ```
 rank  concept_a                       concept_b             expected  tag_observed  text_a  text_b  text_expected  text_observed  text_lift  verdict
 ----  ------------------------------  --------------------  --------  ------------  ------  ------  -------------  -------------  ---------  ------------
@@ -261,6 +265,8 @@ rank  id           title                                                        
 **3위 기록의 제목이 틀렸습니다.** `W3027879771` 의 DOI 는 `10.48550/arxiv.2005.11401`, 저자는 Patrick Lewis 외로,
 실제 논문은 RAG 라는 이름을 처음 쓴 **"Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks"** 입니다.
 출력의 `title` 은 OpenAlex 기록을 그대로 옮기므로 순위표만 보고 논문을 판단하면 안 됩니다.
+
+![RAG 코퍼스 인용 순환 — DPR 이 PageRank 1위인 이유](docs/images/rag-pagerank-cycle.svg)
 
 **1위 DPR 은 코퍼스 안에서 8번밖에 인용되지 않았는데 PageRank 1위입니다.** 코퍼스 안의 인용 관계를 따라가 보면
 RAG 원 논문(275회 인용)이 코퍼스 안에서 인용하는 논문은 DPR 하나뿐이고, DPR 은 2위 FiD 하나만, FiD 는 DPR 과 RAG 원 논문만 인용합니다.
