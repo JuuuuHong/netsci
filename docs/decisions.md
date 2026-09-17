@@ -47,7 +47,7 @@
 - 선택: 명시적 보조 키
 - 이유: 같은 코퍼스에서 항상 같은 표가 나와야 README 결과와 대조할 수 있다.
   - citations: pagerank ↓, 내부 피인용수 ↓, id ↑
-  - concepts: strength ↓, works ↓, 이름 ↑ / `top_neighbor` 는 가중치 ↓, 이름 ↑
+  - concepts: strength ↓, works ↓, 이름 ↑ / `top_neighbor` 는 가중치 ↓, 이름 ↑, id ↑ (id 는 2026-09-17 추가)
   - gaps: lift ↑, expected ↓ (명세), 그다음 concept_a·concept_b 이름 ↑
 
 ## 2026-09-16 gaps 정렬은 정수 교차곱으로 비교
@@ -63,7 +63,8 @@
 ## 2026-09-16 stats 의 내부 비율 정의
 - 선택지: 원본 `referenced_works` 길이 합 / 작품별 중복·자기 인용 제거 후 합
 - 선택: 제거 후 합을 분모, 내부 간선 수를 분자
-- 이유: 분자(간선)와 같은 기준으로 세야 비율이 1 을 넘지 않고 의미가 맞는다. `stats` 의 개념 수는 기본 필터(level ≥ 2, score ≥ 0.4) 기준.
+- 이유: 분자(간선)와 같은 기준으로 세야 비율이 1 을 넘지 않고 의미가 맞는다. ~~`stats` 의 개념 수는 기본 필터(level ≥ 2, score ≥ 0.4) 기준.~~
+  → 2026-09-17 대체: 토픽 추가 후 `stats` 는 `topics`(score ≥ 0.4)와 `concepts`(level ≥ 2, score ≥ 0.4) 수를 따로 낸다.
 
 ## 2026-09-16 `netsci-report` 테스트는 `tests/` 통합 테스트로
 - 선택지: `src/lib.rs` 안의 `#[cfg(test)]` / `tests/report.rs`
@@ -120,7 +121,7 @@
 - 선택지: 중간 등급만 / 낮음 등급까지 전부
 - 선택: 전부 (확신 낮은 참고 사항 5건은 제외)
 - 이유와 내용:
-  - **한도 소진 에러에서도 부분 결과 작성**: 요청 자체가 `BudgetExhausted` 로 실패하면 지금까지 받은 페이지로 `works.jsonl` 을 쓰고 `stopped_by_budget = true`. 에러로 끝내면 `--limit` 을 줄인 재실행도 `query.json` 불일치로 막혀 다음 날까지 분석을 못 한다.
+  - **한도 소진 에러에서도 부분 결과 작성**: 요청 자체가 `BudgetExhausted` 로 실패하면 지금까지 받은 페이지로 `works.jsonl` 을 쓰고 `stopped_by_budget = true`. 에러로 끝내면 `--limit` 을 줄인 재실행도 `query.json` 불일치로 막혀 다음 날까지 분석을 못 한다. (이 불일치 사유는 아래 "캐시 일치 판정에서 `limit` 제외" 로 해소됐다. 부분 결과 작성은 유지한다.)
   - **한도 소진 판정은 재시도 대상 응답(429/5xx)에서만**: 400 같은 요청 오류는 원래 에러 본문을 보여 준다.
   - **`query.json` 없이 캐시 페이지만 있으면 에러(`OrphanCache`)**: 어느 질의의 캐시인지 모르는데 새 질의로 덮으면 캐시가 섞인다. 그래서 테스트도 캐시 페이지를 둘 때 `query.json` 을 함께 둔다.
   - **`results: null` 허용, 깨진 캐시 파일은 지우라고 안내**: 모델(`WorksPage`)의 관대한 파싱과 맞춘다.
@@ -134,7 +135,7 @@
     Docker Desktop(macOS) 바인드 마운트는 소유권을 바꿔 보여 주므로, Docker VM 의 Linux 파일시스템(named volume)에 uid 1000·755 디렉터리를 만들어 확인했다: 기본 실행(uid 10001)은 `Permission denied`, `--user 1000:1000` 은 성공, root 소유 디렉터리는 `--user` 로도 실패(그래서 `mkdir -p data` 를 먼저 안내).
 
 ## 2026-09-17 README 에서 "개발 방식" 절 제외
-- 선택지: 명세 §10-7 대로 포함 / 제외
+- 선택지: 명세 초안의 README 구성대로 포함 / 제외
 - 선택: 제외
 - 이유: 저장소 소유자 결정. README 에 넣을 필요가 없다고 판단했다.
 
@@ -167,7 +168,7 @@
 ## 2026-09-17 기본 분류를 concepts 에서 topics 로 전환
 - 선택지: concepts 유지 / topics 로 교체 / topics 기본 + concepts 비교용 유지
 - 선택: topics 기본 + concepts 비교용 유지 (`--taxonomy`)
-- 이유: OpenAlex 는 concepts 를 더 이상 관리·갱신하지 않는 폐기 예정 분류로 두고 2024 년 도입한 topics 를 권장한다. 폐기된 분류만 쓰면 "오분류 발견" 이 "폐기된 분류의 알려진 문제" 가 된다. concepts 는 동음이의어 오분류를 재현·비교하는 용도로 남긴다. topics 에는 level 이 없어 `min_level` 은 concepts 에만 적용한다. 캐시 스키마를 3 으로 올려 토픽 없는 캐시와 섞이지 않게 한다.
+- 이유: OpenAlex 는 concepts 를 더 이상 관리·갱신하지 않는 폐기 예정 분류로 두고 2024 년 도입한 topics 를 권장한다. 폐기된 분류만 쓰면 "오분류 발견" 이 "폐기된 분류의 알려진 문제" 가 된다. concepts 는 동음이의어 오분류를 재현·비교하는 용도로 남긴다. (`verify`·`evidence` 의 기본은 아래 "verify·evidence 기본 분류를 concepts 로" 에서 concepts 로 대체됐다.) topics 에는 level 이 없어 `min_level` 은 concepts 에만 적용한다. 캐시 스키마를 3 으로 올려 토픽 없는 캐시와 섞이지 않게 한다.
 
 ## 2026-09-17 verify 모수를 초록이 있는 작품으로 제한
 - 선택지: 전체 작품(초록 없으면 제목만) / 초록이 있는 작품만
@@ -188,3 +189,36 @@
 - 선택지: 라이브러리 단위 테스트만 / 빌드된 바이너리를 실행하는 테스트 추가
 - 선택: 추가 (`std::process::Command` + `CARGO_BIN_EXE_netsci`, 의존성 추가 없음)
 - 이유: 인자 파싱·출력 형식·종료 코드는 라이브러리 테스트로 검증되지 않는다.
+
+## 2026-09-17 verify·evidence 기본 분류를 concepts 로
+- 선택지: 모든 명령 topics 기본 / 텍스트 검증 명령(`verify`·`evidence`)만 concepts 기본
+- 선택: 텍스트 검증 명령만 concepts 기본. `--taxonomy` 는 명령마다 따로 선언해 기본값만 다르게 하고, 문턱값(`--min-level`·`--min-score`)만 공통 구조체에 남겼다
+- 이유: 텍스트 검증은 레이블 표시 이름을 제목·초록에서 찾는다. 토픽 이름(`Advanced Battery Materials and Technologies` 등)은 구문형이라 본문에 그대로 나오는 일이 드물어, topics 기본이면 결과 대부분이 `unverifiable` 이 된다. concepts 이름은 단어·짧은 명사구라 일치가 성립한다. `--taxonomy topics` 를 직접 주면 stderr 에 경고하고 `--alias` 나 concepts 를 권한다.
+- 함께 바꾼 것: 쓰이지 않은 `--alias`(결과 쌍 또는 `--a`/`--b` 어느 이름과도 맞지 않음)와, 필터를 통과한 코퍼스의 어느 레이블과도 맞지 않는 `evidence --a/--b` 이름(태그 열이 전부 false)을 stderr 로 경고한다. 기존 `warn_if_no_labels` 처럼 바이너리에서 낸다. 이름 비교는 ASCII 전용(`eq_ignore_ascii_case`)에서 유니코드 소문자 비교로 바꿨다.
+
+## 2026-09-17 fetch 캐시 일치 판정에서 `limit` 제외
+- 선택지: `query.json` 의 네 인자를 모두 비교 / `query`·`filter`·`schema` 만 비교하고 `limit` 은 기록만 갱신
+- 선택: 후자
+- 이유: per-page 가 항상 200 이라(2026-09-16 항목) 캐시 페이지 내용은 `limit` 과 무관하다. `limit` 까지 비교하면 수집량만 바꾼 재실행이 `QueryMismatch` 로 막혀, 같은 페이지를 다른 디렉터리에 유료로 다시 받아야 했다. `limit` 만 다르면 `query.json` 을 새 값으로 갱신하고, 늘리면 마지막 캐시 페이지의 `next_cursor` 부터 이어받고 줄이면 캐시에서 읽어 자른다.
+
+## 2026-09-17 verify 에 `text_lift` 열 추가
+- 선택지: 판정 기준을 lift 문턱값으로 바꾼다 / 판정은 그대로 두고 `text_observed / text_expected` 열을 더한다
+- 선택: 판정은 그대로, `text_observed` 바로 뒤에 `text_lift`(소수 3자리) 추가
+- 이유: `co_mentioned` 는 텍스트 공존이 1편 이상이면 붙어, `text_expected` 40 에 1편인 약한 공존도 같은 판정이 된다. 새 문턱값을 정할 근거(표본 정확도)가 아직 없으므로 판정 의미는 바꾸지 않고 비율을 함께 보여 준다. `text_expected` 가 0 이면(한쪽 표현이 한 번도 안 나옴) 공존도 0 이므로 0 으로 둔다.
+
+## 2026-09-17 3차 코드 리뷰 반영
+- 선택지: 설계 변경(위 세 항목)만 / 결함 수정까지
+- 선택: 결함 수정까지
+- 이유와 내용:
+  - **초록 위치 `usize::MAX` 넘침**: `+ 1` 이 디버그에서는 패닉, 릴리스에서는 0 으로 감겨 크기 검사를 통과한 뒤 인덱싱에서 패닉했다. 페이지는 이미 캐시된 뒤라 재실행마다 패닉한다. `checked_add` 로 넘치면 초록 없음으로 본다.
+  - **캐시 존재 확인 입출력 실패를 에러로**: `try_exists(..).unwrap_or(false)` 는 권한 오류 등을 "캐시 없음" 으로 보아 이미 받은 페이지를 유료로 다시 받는다. `FetchError::Io` 로 돌려준다.
+  - **`top_neighbor` 최종 동점 키에 id**: 가중치와 표시 이름이 같은 이웃이 둘이면 `HashMap` 순회 순서에 따라 결과가 달라졌다.
+  - **비 ASCII 스니펫 테스트**: 기존 입력은 시작 위치가 늘 글자 경계에 떨어져 시작 쪽 경계 보정이 실행되지 않았다. 앞에 ASCII 한 글자를 더해 양쪽 보정을 모두 거치게 하고 결과 문자열을 정확히 비교한다.
+
+## 2026-09-17 전량 수집 결과로 README 실행 결과 교체
+- 선택지: 2,000편 결과 유지 / 리튬 금속 음극 전량(26,685편)·현재 스키마 결과로 교체
+- 선택: 교체. 키 없이 81페이지에서 한도로 멈춘 뒤 무료 API 키로 나머지 53페이지를 이어받았다(중복 0, `reported_total` 과 편수 일치)
+- 관찰:
+  - **"성긴 원인 일부가 수집량" 이라는 위 가정은 맞지 않았다.** 내부 인용 비율이 16,200편 시점 0.1163 → 전량 0.0822 로 낮아졌다. 검색 관련도가 낮은 뒤쪽 논문이 코퍼스 밖을 더 많이 인용하는 것으로 보인다(미확인 추정)
+  - **topics 기준 `gaps` 상위 20쌍은 모두 "배터리 핵심 토픽 × 다른 분야 토픽"** 이다. 토픽이 논문당 최대 3개(26,379편이 정확히 3개)라 전문 검색으로 들어온 다른 분야 논문과는 구조적으로 공존할 수 없다. 기본 분류는 그대로 두고 README 한계에 기록했다
+  - concepts 기준 후보 20쌍을 `verify` 하면 co_mentioned 12 · absent_in_text 4 · unverifiable 4. 괄호 한정어 제거가 `Production (economics)` → `production` 같은 일반 단어 과잉 일치를 만든다
