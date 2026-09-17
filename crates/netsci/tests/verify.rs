@@ -65,8 +65,8 @@ fn 텍스트_공존을_손계산과_대조한다() {
     let (graph, rows) = verify_gaps(&corpus(), &ConceptFilter::concepts(), 3, 1, &[]);
     assert_eq!(rows.len(), 1);
     let v = &rows[0];
-    assert_eq!(graph.names[v.gap.a as usize], B);
-    assert_eq!(graph.names[v.gap.b as usize], "Cathode");
+    assert_eq!(graph.names()[v.gap.a as usize], B);
+    assert_eq!(graph.names()[v.gap.b as usize], "Cathode");
     assert_eq!(v.gap.observed, 1, "태그 기준 공존은 W6 하나");
     assert!((v.gap.expected - 3.0).abs() < 1e-12);
     assert_eq!((v.text_a, v.text_b, v.text_observed), (3, 2, 1));

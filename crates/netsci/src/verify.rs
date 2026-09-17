@@ -169,8 +169,10 @@ fn corpus_texts(works: &[Work]) -> Vec<(usize, String)> {
 
 /// 공백 개념쌍 상위 `top` 개를 텍스트로 검증한다.
 ///
-/// 비용: 후보 쌍에 등장하는 개념 C 개 × 논문 N 편만큼 부분 문자열 검색을 한다.
-/// 상위 수십 쌍이면 C 는 수십이라 수만 편 코퍼스에서도 한 번 훑는 수준이다.
+/// 비용: 후보 쌍에 등장하는 개념 C 개마다 초록이 있는 논문 N 편의 정규화 텍스트 전체를 부분 문자열 검색으로 훑는다.
+/// 즉 C × (텍스트 총 길이) 에 비례하고, 공백 탐지 자체보다 훨씬 비싸다. `top` 이 커지면 C 도 늘어
+/// (리튬 4,438편 코퍼스의 concepts 후보 3,886쌍 전부면 C 는 후보 개념 217개 전부) 선형으로 느려진다.
+/// 개념별 일치 논문 집합은 한 번만 만들어 쌍끼리 공유한다.
 pub fn verify_gaps(
     works: &[Work],
     filter: &ConceptFilter,
@@ -179,7 +181,7 @@ pub fn verify_gaps(
     aliases: &[Alias],
 ) -> (ConceptGraph, Vec<VerifiedGap>) {
     let graph = ConceptGraph::build(works, filter);
-    let gaps: Vec<Gap> = find_gaps(&graph, min_works).into_iter().take(top).collect();
+    let gaps: Vec<Gap> = find_gaps(&graph, min_works, top);
 
     let texts = corpus_texts(works);
 
@@ -188,7 +190,7 @@ pub fn verify_gaps(
     for gap in &gaps {
         for concept in [gap.a, gap.b] {
             hits.entry(concept).or_insert_with(|| {
-                let terms = ConceptTerms::new(&graph.names[concept as usize], aliases);
+                let terms = ConceptTerms::new(&graph.names()[concept as usize], aliases);
                 texts
                     .iter()
                     .filter(|(_, t)| terms.matches(t))

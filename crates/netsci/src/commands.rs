@@ -7,6 +7,7 @@ use crate::citation::{CitationGraph, pagerank};
 use crate::concept::{ConceptFilter, ConceptGraph};
 use crate::corpus::Work;
 use crate::gaps::find_gaps;
+use crate::top::sort_top_by;
 use crate::verify::{Alias, evidence as find_evidence, verify_gaps};
 
 /// 제목을 자를 글자 수.
@@ -97,7 +98,7 @@ pub struct CitationRow {
 pub fn stats(works: &[Work]) -> StatsRow {
     let graph = CitationGraph::build(works);
     let internal_edges = graph.edge_count();
-    let total_references = graph.total_references;
+    let total_references = graph.total_references();
     StatsRow {
         works: graph.node_count(),
         year_min: works.iter().filter_map(|w| w.year).min(),
@@ -118,23 +119,24 @@ pub fn stats(works: &[Work]) -> StatsRow {
 /// PageRank 상위 `top` 편. 동점이면 내부 피인용수 내림차순, id 오름차순.
 pub fn citations(works: &[Work], top: usize) -> Vec<CitationRow> {
     let graph = CitationGraph::build(works);
-    let ranks = pagerank(&graph.adjacency);
+    let ranks = pagerank(&graph);
     let in_degrees = graph.in_degrees();
+    let ids = graph.ids();
 
+    // 노드마다 id 가 달라 비교가 전순서다.
     let mut order: Vec<usize> = (0..graph.node_count()).collect();
-    order.sort_by(|&a, &b| {
+    sort_top_by(&mut order, top, |&a, &b| {
         ranks[b]
             .total_cmp(&ranks[a])
             .then(in_degrees[b].cmp(&in_degrees[a]))
-            .then(graph.ids[a].cmp(&graph.ids[b]))
+            .then(ids[a].cmp(&ids[b]))
     });
 
     order
         .into_iter()
-        .take(top)
         .enumerate()
         .map(|(i, node)| {
-            let work = &works[graph.work_index[node]];
+            let work = &works[graph.work_index(node)];
             CitationRow {
                 rank: i + 1,
                 id: work.id.clone(),
@@ -154,25 +156,29 @@ pub fn concepts(works: &[Work], filter: &ConceptFilter, top: usize) -> Vec<Conce
     let strengths = graph.strengths();
     let neighbors = graph.top_neighbors();
 
+    let (names, works_of) = (graph.names(), graph.works());
+
+    // 이름이 같은 서로 다른 개념은 개념 번호로 가른다. 예전의 안정 정렬이 번호 순으로 남기던 순서와 같고,
+    // 이 키로 전순서가 되어 불안정 정렬을 써도 된다.
     let mut order: Vec<usize> = (0..graph.concept_count()).collect();
-    order.sort_by(|&a, &b| {
+    sort_top_by(&mut order, top, |&a, &b| {
         strengths[b]
             .cmp(&strengths[a])
-            .then(graph.works[b].cmp(&graph.works[a]))
-            .then(graph.names[a].cmp(&graph.names[b]))
+            .then(works_of[b].cmp(&works_of[a]))
+            .then(names[a].cmp(&names[b]))
+            .then(a.cmp(&b))
     });
 
     order
         .into_iter()
-        .take(top)
         .enumerate()
         .map(|(i, c)| ConceptRow {
             rank: i + 1,
-            concept: graph.names[c].clone(),
-            level: graph.levels[c],
-            works: graph.works[c],
+            concept: names[c].clone(),
+            level: graph.levels()[c],
+            works: works_of[c],
             strength: strengths[c],
-            top_neighbor: neighbors[c].map(|n| graph.names[n as usize].clone()),
+            top_neighbor: neighbors[c].map(|n| names[n as usize].clone()),
         })
         .collect()
 }
@@ -180,14 +186,13 @@ pub fn concepts(works: &[Work], filter: &ConceptFilter, top: usize) -> Vec<Conce
 /// 공백 개념쌍 상위 `top` 개.
 pub fn gaps(works: &[Work], filter: &ConceptFilter, min_works: usize, top: usize) -> Vec<GapRow> {
     let graph = ConceptGraph::build(works, filter);
-    find_gaps(&graph, min_works)
+    find_gaps(&graph, min_works, top)
         .into_iter()
-        .take(top)
         .enumerate()
         .map(|(i, g)| GapRow {
             rank: i + 1,
-            concept_a: graph.names[g.a as usize].clone(),
-            concept_b: graph.names[g.b as usize].clone(),
+            concept_a: graph.names()[g.a as usize].clone(),
+            concept_b: graph.names()[g.b as usize].clone(),
             works_a: g.works_a,
             works_b: g.works_b,
             observed: g.observed,
@@ -211,8 +216,8 @@ pub fn verify(
         .enumerate()
         .map(|(i, v)| VerifyRow {
             rank: i + 1,
-            concept_a: graph.names[v.gap.a as usize].clone(),
-            concept_b: graph.names[v.gap.b as usize].clone(),
+            concept_a: graph.names()[v.gap.a as usize].clone(),
+            concept_b: graph.names()[v.gap.b as usize].clone(),
             expected: v.gap.expected,
             tag_observed: v.gap.observed,
             text_a: v.text_a,

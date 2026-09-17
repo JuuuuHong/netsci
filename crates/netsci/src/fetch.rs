@@ -186,9 +186,28 @@ pub async fn fetch<C: WorksClient>(
     summary.works = works.len();
     summary.duplicates = kept - works.len();
     summary.pages = summary.cached_pages + summary.fetched_pages;
-    let works_path = data_dir.join(WORKS_FILE);
-    corpus::write_jsonl(&works_path, &works)?;
+    write_works(data_dir.join(WORKS_FILE), works).await?;
     Ok(summary)
+}
+
+/// `works.jsonl` 을 블로킹 스레드에서 쓴다.
+///
+/// `corpus::write_jsonl` 은 표준 라이브러리 파일 입출력을 쓰는 동기 함수이고, 코퍼스 전체를 직렬화해 쓴 뒤 `fsync` 까지 하므로
+/// 비동기 작업 안에서 그대로 부르면 런타임 스레드를 막는다. 캐시 페이지 입출력이 `tokio::fs` 를 쓰는 것과 맞춰
+/// 블로킹 입출력은 모두 블로킹 스레드 풀로 보낸다. 작업이 패닉하면 패닉을 그대로 이어서 전파한다.
+async fn write_works(path: PathBuf, works: Vec<Work>) -> Result<(), FetchError> {
+    let task_path = path.clone();
+    match tokio::task::spawn_blocking(move || corpus::write_jsonl(&task_path, &works)).await {
+        Ok(result) => Ok(result?),
+        Err(err) => match err.try_into_panic() {
+            Ok(payload) => std::panic::resume_unwind(payload),
+            // 런타임이 종료되며 작업이 취소된 경우
+            Err(err) => Err(FetchError::Io {
+                path,
+                source: std::io::Error::other(err),
+            }),
+        },
+    }
 }
 
 /// 캐시 페이지 파싱 실패 시 붙이는 안내.

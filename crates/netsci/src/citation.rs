@@ -12,18 +12,24 @@ pub const TOLERANCE: f64 = 1e-10;
 pub const MAX_ITERATIONS: usize = 100;
 
 /// 코퍼스 내부 인용 그래프. 간선 `A → B` 는 A 가 B 를 인용한다는 뜻이다.
+///
+/// 필드를 숨기고 [`CitationGraph::build`] 로만 만든다. 그래서 다음 불변식이 항상 성립한다.
+/// - `ids`·`work_index`·`adjacency` 의 길이가 노드 수와 같고 `index` 는 `ids` 의 역방향이다
+/// - 인접 리스트의 노드 번호는 모두 범위 안이고, 리스트마다 정렬돼 있으며 중복·자기 간선이 없다
+///
+/// [`pagerank`] 는 이 불변식에 기대어 범위 검사를 하지 않는다.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CitationGraph {
     /// 노드 번호 → 작품 id
-    pub ids: Vec<String>,
+    ids: Vec<String>,
     /// 작품 id → 노드 번호
-    pub index: HashMap<String, usize>,
+    index: HashMap<String, usize>,
     /// 노드 번호 → 입력 `works` 에서의 위치 (처음 나온 것)
-    pub work_index: Vec<usize>,
-    /// 나가는 간선 인접 리스트. 각 리스트는 정렬돼 있고 중복·자기 간선이 없다.
-    pub adjacency: Vec<Vec<usize>>,
+    work_index: Vec<usize>,
+    /// 나가는 간선 인접 리스트
+    adjacency: Vec<Vec<usize>>,
     /// 작품별 참조 수 합계 (자기 인용·중복 제외, 코퍼스 밖 포함)
-    pub total_references: usize,
+    total_references: usize,
 }
 
 impl CitationGraph {
@@ -68,6 +74,31 @@ impl CitationGraph {
         self.ids.len()
     }
 
+    /// 노드 번호 → 작품 id
+    pub fn ids(&self) -> &[String] {
+        &self.ids
+    }
+
+    /// 작품 id 의 노드 번호. 코퍼스에 없으면 `None`.
+    pub fn node(&self, id: &str) -> Option<usize> {
+        self.index.get(id).copied()
+    }
+
+    /// 노드가 처음 나온 입력 `works` 의 위치.
+    pub fn work_index(&self, node: usize) -> usize {
+        self.work_index[node]
+    }
+
+    /// 나가는 간선 인접 리스트. 리스트마다 정렬돼 있고 중복·자기 간선이 없다.
+    pub fn adjacency(&self) -> &[Vec<usize>] {
+        &self.adjacency
+    }
+
+    /// 작품별 참조 수 합계 (자기 인용·중복 제외, 코퍼스 밖 포함)
+    pub fn total_references(&self) -> usize {
+        self.total_references
+    }
+
     pub fn edge_count(&self) -> usize {
         self.adjacency.iter().map(Vec::len).sum()
     }
@@ -84,45 +115,40 @@ impl CitationGraph {
     }
 }
 
-/// 인접 리스트에 대한 PageRank. 결과 합은 1 이다 (빈 그래프면 빈 벡터).
+/// 인용 그래프의 PageRank. 결과는 노드 번호 순이고 합은 1 이다 (빈 그래프면 빈 벡터).
 ///
 /// ```text
 /// PR_new[v] = (1 - d)/N + d * ( Σ_{u→v} PR[u]/outdeg(u) + dangling_sum/N )
 /// ```
 /// 나가는 간선이 없는 dangling 노드의 점수는 모든 노드에 균등 분배한다.
-/// 범위를 벗어난 노드 번호의 간선은 없는 것으로 보고 출차수에서도 뺀다 (합이 1 로 유지된다).
-pub fn pagerank(adjacency: &[Vec<usize>]) -> Vec<f64> {
+/// 입력을 `&CitationGraph` 로 받아 노드 번호가 범위 안이고 중복 간선이 없다는 불변식을 타입으로 보장받는다.
+pub fn pagerank(graph: &CitationGraph) -> Vec<f64> {
+    let adjacency = &graph.adjacency;
     let n = adjacency.len();
     if n == 0 {
         return Vec::new();
     }
-    let out_degrees: Vec<usize> = adjacency
-        .iter()
-        .map(|targets| targets.iter().filter(|&&v| v < n).count())
-        .collect();
     let n_f = n as f64;
     let mut rank = vec![1.0 / n_f; n];
     let mut next = vec![0.0; n];
 
     for _ in 0..MAX_ITERATIONS {
-        let dangling_sum: f64 = out_degrees
+        let dangling_sum: f64 = adjacency
             .iter()
             .zip(&rank)
-            .filter(|(degree, _)| **degree == 0)
+            .filter(|(targets, _)| targets.is_empty())
             .map(|(_, r)| r)
             .sum();
         let base = (1.0 - DAMPING) / n_f + DAMPING * dangling_sum / n_f;
         next.fill(base);
 
         for (u, targets) in adjacency.iter().enumerate() {
-            if out_degrees[u] == 0 {
+            if targets.is_empty() {
                 continue;
             }
-            let share = DAMPING * rank[u] / out_degrees[u] as f64;
+            let share = DAMPING * rank[u] / targets.len() as f64;
             for &v in targets {
-                if let Some(slot) = next.get_mut(v) {
-                    *slot += share;
-                }
+                next[v] += share;
             }
         }
 

@@ -104,22 +104,26 @@ impl ConceptFilter {
 }
 
 /// 개념 동시출현 그래프. 개념 번호는 `u32` 로, 처음 등장한 순서대로 붙는다.
+///
+/// 필드를 숨기고 [`ConceptGraph::build`] 로만 만든다. 그래서 다음 불변식이 항상 성립한다.
+/// - `ids`·`names`·`levels`·`works` 의 길이가 개념 수와 같고 `index` 는 `ids` 의 역방향이다
+/// - `cooccurrence` 의 키 `(a, b)` 는 `a < b` 이고 둘 다 범위 안의 개념 번호다
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ConceptGraph {
     /// 코퍼스 작품 수 (개념이 하나도 없는 작품 포함)
-    pub n_works: usize,
+    n_works: usize,
     /// 개념 번호 → 개념 id
-    pub ids: Vec<String>,
+    ids: Vec<String>,
     /// 개념 번호 → 표시 이름 (처음 본 것)
-    pub names: Vec<String>,
+    names: Vec<String>,
     /// 개념 번호 → level (처음 본 것, topics 는 `None`)
-    pub levels: Vec<Option<u8>>,
+    levels: Vec<Option<u8>>,
     /// 개념 id → 개념 번호
-    pub index: HashMap<String, u32>,
+    index: HashMap<String, u32>,
     /// 개념 번호 → 등장 논문 수
-    pub works: Vec<u32>,
+    works: Vec<u32>,
     /// `(a, b)` (a < b) → 두 개념을 함께 가진 논문 수
-    pub cooccurrence: HashMap<(u32, u32), u32>,
+    cooccurrence: HashMap<(u32, u32), u32>,
 }
 
 impl ConceptGraph {
@@ -163,6 +167,36 @@ impl ConceptGraph {
 
     pub fn concept_count(&self) -> usize {
         self.ids.len()
+    }
+
+    /// 코퍼스 작품 수 (개념이 하나도 없는 작품 포함)
+    pub fn n_works(&self) -> usize {
+        self.n_works
+    }
+
+    /// 개념 번호 → 개념 id
+    pub fn ids(&self) -> &[String] {
+        &self.ids
+    }
+
+    /// 개념 번호 → 표시 이름 (처음 본 것)
+    pub fn names(&self) -> &[String] {
+        &self.names
+    }
+
+    /// 개념 번호 → level (처음 본 것, topics 는 `None`)
+    pub fn levels(&self) -> &[Option<u8>] {
+        &self.levels
+    }
+
+    /// 개념 번호 → 등장 논문 수
+    pub fn works(&self) -> &[u32] {
+        &self.works
+    }
+
+    /// 개념 id 의 개념 번호. 그래프에 없으면 `None`.
+    pub fn concept(&self, id: &str) -> Option<u32> {
+        self.index.get(id).copied()
     }
 
     /// 두 개념을 함께 가진 논문 수. 순서는 상관없다.

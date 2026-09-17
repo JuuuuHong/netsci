@@ -5,10 +5,10 @@
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{ToTokens, quote};
+use quote::{ToTokens, quote, quote_spanned};
 use syn::ext::IdentExt;
 use syn::spanned::Spanned;
-use syn::{Data, DeriveInput, Field, Fields, LitInt, LitStr, Type, parse_macro_input};
+use syn::{Data, DeriveInput, Field, Fields, LitInt, LitStr, parse_macro_input};
 
 const NAMED_FIELDS_ONLY: &str = "Report can only be derived for structs with named fields";
 
@@ -17,10 +17,15 @@ const NAMED_FIELDS_ONLY: &str = "Report can only be derived for structs with nam
 /// 필드 속성:
 /// - `#[report(rename = "name")]` — 열 이름 변경
 /// - `#[report(skip)]` — 열에서 제외 (다른 속성과 함께 쓸 수 없다)
-/// - `#[report(precision = N)]` — `format!("{:.N}")` 적용. `{:.N}` 은 문자열을 N 글자로 자르고 정수에는
-///   아무 효과가 없으므로, 타입이 정수·`bool`·`char`·`String`·`str` 로 확인되면 컴파일 에러를 낸다.
+/// - `#[report(precision = N)]` — 소수 N 자리. 필드 타입이 `netsci_report::PrecisionCell`(`f32`·`f64`·그 `Option`·참조)을 구현해야 한다
+/// - `#[report(display)]` — `Display` 로 바로 문자열화한다. `Cell` 을 구현하지 않은 사용자 정의 타입용이다 (`precision` 과 함께 쓸 수 없다)
 ///
-/// `Option<T>` 필드는 `None` 이면 빈 문자열이 된다.
+/// 매크로는 필드 타입을 토큰으로 판별하지 않는다. 속성이 없는 필드는 `netsci_report::Cell::cell`,
+/// `precision` 필드는 `netsci_report::PrecisionCell::cell_with_precision` 호출을 필드 타입의 span 으로 만들고,
+/// 타입이 맞는지는 트레이트 구현으로 컴파일러가 판정한다. 그래서 타입 별칭(`type S = Option<f64>`)도 실제 타입대로
+/// 처리되고, 맞지 않는 타입의 에러는 필드 타입 위치에 난다. `Option<T>` 의 `None` 은 트레이트 구현에서 빈 문자열이 된다.
+///
+/// 제네릭 구조체에는 바운드를 더하지 않는다. 타입 매개변수 필드를 쓰려면 `T: netsci_report::Cell` 을 직접 적는다.
 #[proc_macro_derive(Report, attributes(report))]
 pub fn derive_report(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -84,6 +89,8 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 struct FieldOptions {
     rename: Option<LitStr>,
     precision: Option<LitInt>,
+    /// `display` 경로 (에러 위치용)
+    display: Option<syn::Path>,
     skip: bool,
 }
 
@@ -129,10 +136,18 @@ impl FieldOptions {
                         ));
                     }
                     options.precision = Some(lit);
+                } else if meta.path.is_ident("display") {
+                    if meta.input.peek(syn::Token![=]) || meta.input.peek(syn::token::Paren) {
+                        return Err(meta.error("`display` takes no value; write `#[report(display)]`"));
+                    }
+                    if options.display.is_some() {
+                        return Err(meta.error("duplicate `display` attribute"));
+                    }
+                    options.display = Some(meta.path.clone());
                 } else {
                     let key = meta.path.to_token_stream().to_string().replace(' ', "");
                     return Err(meta.error(format!(
-                        "unknown report attribute `{key}`; expected `rename`, `skip`, or `precision`"
+                        "unknown report attribute `{key}`; expected `rename`, `skip`, `precision`, or `display`"
                     )));
                 }
 
@@ -143,26 +158,33 @@ impl FieldOptions {
                 Ok(())
             })?;
         }
-        if let Some(lit) = &options.precision
-            && let Some(name) = non_float_type_name(&field.ty)
-        {
+        // 자릿수는 `Display` 로 바로 문자열화하는 경로에 적용할 수 없다 (문자열이면 잘린다).
+        if let (Some(_), Some(path)) = (&options.precision, &options.display) {
             return Err(syn::Error::new_spanned(
-                lit,
-                format!(
-                    "`precision` has no meaningful effect on `{name}` (it truncates strings and is ignored for integers); use it only on floating-point fields"
-                ),
+                path,
+                "`display` cannot be combined with `precision`",
             ));
         }
         Ok(options)
     }
 }
 
+/// 셀 문자열을 만드는 방식.
+enum CellKind {
+    /// `<T as ::netsci_report::Cell>::cell`
+    Cell,
+    /// `<T as ::netsci_report::PrecisionCell>::cell_with_precision`
+    Precision(u16),
+    /// `<T as ::std::string::ToString>::to_string`
+    Display,
+}
+
 /// 출력에 들어가는 열 하나.
 struct Column {
     header: LitStr,
     ident: syn::Ident,
-    precision: Option<u16>,
-    is_option: bool,
+    ty: syn::Type,
+    kind: CellKind,
 }
 
 impl Column {
@@ -178,90 +200,48 @@ impl Column {
         let precision = options
             .precision
             .and_then(|lit| lit.base10_parse::<u16>().ok());
+        let kind = match (precision, options.display) {
+            (Some(p), _) => CellKind::Precision(p),
+            (None, Some(_)) => CellKind::Display,
+            (None, None) => CellKind::Cell,
+        };
         Self {
             header,
             ident,
-            precision,
-            is_option: is_option(&field.ty),
+            ty: strip_parens(&field.ty).clone(),
+            kind,
         }
     }
 
-    /// 셀 문자열을 만드는 식.
+    /// 셀 문자열을 만드는 식. 필드 타입을 `<T as Trait>` 로 명시해 호출한다.
+    ///
+    /// - 타입이 트레이트를 구현하지 않으면 rustc 가 한정 경로 안의 `T` 토큰, 즉 사용자가 쓴 필드 타입 위치에 에러를 낸다.
+    ///   `Cell::cell(&self.field)` 처럼 `Self` 를 추론에 맡기면 주 에러 위치가 인자, 곧 `#[derive(Report)]` 가 된다
+    /// - 한정 경로의 나머지 토큰도 `quote_spanned!` 로 필드 타입 span 을 주고, 매크로가 만든 `&self.field` 는 호출 위치 span 으로 둔다
     fn cell(&self) -> TokenStream2 {
         let ident = &self.ident;
-        let format_value = |value: TokenStream2| match self.precision {
-            Some(p) => {
-                let fmt = format!("{{:.{p}}}");
-                quote!(::std::format!(#fmt, #value))
+        let ty = &self.ty;
+        let value = quote!(&self.#ident);
+        let span = ty.span();
+        match self.kind {
+            CellKind::Cell => {
+                quote_spanned!(span=> <#ty as ::netsci_report::Cell>::cell(#value))
             }
-            None => quote!(::std::string::ToString::to_string(#value)),
-        };
-        if self.is_option {
-            let some = format_value(quote!(value));
-            quote! {
-                match &self.#ident {
-                    ::std::option::Option::Some(value) => #some,
-                    ::std::option::Option::None => ::std::string::String::new(),
-                }
+            CellKind::Precision(p) => {
+                let precision = usize::from(p);
+                quote_spanned!(span=> <#ty as ::netsci_report::PrecisionCell>::cell_with_precision(#value, #precision))
             }
-        } else {
-            format_value(quote!(&self.#ident))
+            CellKind::Display => {
+                quote_spanned!(span=> <#ty as ::std::string::ToString>::to_string(#value))
+            }
         }
     }
 }
 
-/// 타입 경로의 끝 세그먼트가 `Option` 인지 본다 (`Option<T>`, `std::option::Option<T>` 등).
-/// `macro_rules!` 가 넘긴 타입(`Type::Group`)과 괄호 타입도 벗겨서 본다.
-fn is_option(ty: &Type) -> bool {
-    option_segment(strip_wrappers(ty)).is_some()
-}
-
-/// 괄호·매크로 그룹을 벗긴다.
-fn strip_wrappers(ty: &Type) -> &Type {
+/// `(T)` 의 괄호를 벗긴다. 괄호째 `<(T) as Trait>` 로 내보내면 사용자 코드 span 에 `unused_parens` 경고가 난다.
+fn strip_parens(ty: &syn::Type) -> &syn::Type {
     match ty {
-        Type::Group(group) => strip_wrappers(&group.elem),
-        Type::Paren(paren) => strip_wrappers(&paren.elem),
+        syn::Type::Paren(paren) => strip_parens(&paren.elem),
         other => other,
-    }
-}
-
-fn option_segment(ty: &Type) -> Option<&syn::PathSegment> {
-    match ty {
-        Type::Path(path) if path.qself.is_none() => path
-            .path
-            .segments
-            .last()
-            .filter(|seg| seg.ident == "Option"),
-        _ => None,
-    }
-}
-
-/// `precision` 이 의미 없는 타입으로 확인되면 그 이름. 모르는 타입(사용자 정의 등)은 `None` 으로 허용한다.
-/// `Option<T>` 는 `T` 를, 참조는 대상 타입을 본다.
-fn non_float_type_name(ty: &Type) -> Option<String> {
-    const NON_FLOAT: &[&str] = &[
-        "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize",
-        "bool", "char", "String", "str",
-    ];
-    let ty = strip_wrappers(ty);
-    if let Type::Reference(reference) = ty {
-        return non_float_type_name(&reference.elem);
-    }
-    if let Some(seg) = option_segment(ty) {
-        if let syn::PathArguments::AngleBracketed(args) = &seg.arguments
-            && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
-        {
-            return non_float_type_name(inner);
-        }
-        return None;
-    }
-    match ty {
-        Type::Path(path) if path.qself.is_none() => path
-            .path
-            .segments
-            .last()
-            .map(|seg| seg.ident.to_string())
-            .filter(|name| NON_FLOAT.contains(&name.as_str())),
-        _ => None,
     }
 }

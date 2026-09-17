@@ -158,7 +158,9 @@ enum Command {
     },
 }
 
-#[tokio::main]
+// 비동기가 필요한 것은 `fetch` 의 HTTP 요청·대기뿐이고 페이지는 cursor 로 하나씩 순서대로 받으므로
+// 동시에 돌 작업이 없다. 워커 스레드 풀 없이 현재 스레드 런타임으로 충분하다 (docs/decisions.md 2026-09-17).
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let format = Format::from(cli.format);

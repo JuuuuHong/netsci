@@ -1,6 +1,9 @@
 //! derive 매크로 생성 코드와 render 테스트.
 
-use netsci_report::{Format, Report, render};
+use std::borrow::Cow;
+use std::fmt;
+
+use netsci_report::{Cell, Format, Report, render};
 use serde::Serialize;
 
 #[derive(Report, Serialize)]
@@ -23,10 +26,11 @@ struct OptionalRow {
     note: std::option::Option<String>,
 }
 
+/// 제네릭 필드는 매크로가 바운드를 더하지 않으므로 `Cell` 바운드를 직접 적는다.
 #[derive(Report, Serialize)]
-struct Pair<T: std::fmt::Display, U>
+struct Pair<T: Cell, U>
 where
-    U: std::fmt::Display,
+    U: Cell,
 {
     left: T,
     right: U,
@@ -52,6 +56,48 @@ row_with_type!(MacroOption, Option<i32>);
 struct ParenOption {
     #[allow(unused_parens)]
     value: (Option<i32>),
+}
+
+/// 타입 별칭 뒤의 `Option` 은 토큰으로는 보이지 않는다. 트레이트 구현으로 판정하므로 `None` 이 빈 칸이 된다.
+type MaybeScore = Option<f64>;
+
+#[derive(Report, Serialize)]
+struct Pointers<'a> {
+    #[report(precision = 2)]
+    alias: MaybeScore,
+    boxed: Box<str>,
+    cow: Cow<'a, str>,
+    borrowed: &'a str,
+    #[report(precision = 1)]
+    by_ref: &'a f64,
+    nested: Option<Box<str>>,
+}
+
+/// `Cell` 을 구현하지 않은 사용자 정의 `Display` 타입.
+#[derive(Serialize)]
+struct Doi(&'static str);
+
+impl fmt::Display for Doi {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "doi:{}", self.0)
+    }
+}
+
+/// `Cell` 을 직접 구현한 사용자 정의 타입은 `Option` 안에서도 쓸 수 있다.
+#[derive(Serialize)]
+struct Percent(f64);
+
+impl Cell for Percent {
+    fn cell(&self) -> String {
+        format!("{:.1}%", self.0 * 100.0)
+    }
+}
+
+#[derive(Report, Serialize)]
+struct Custom {
+    #[report(display, rename = "id")]
+    doi: Doi,
+    share: Option<Percent>,
 }
 
 /// 계약을 어긴 수동 구현: 헤더는 2개인데 셀 수가 행마다 다르다.
@@ -109,6 +155,53 @@ fn derive_제네릭_구조체() {
         right: "x".to_string(),
     };
     assert_eq!(pair.row(), ["7", "x"]);
+}
+
+#[test]
+fn derive_타입_별칭_box_cow_참조_필드() {
+    assert_eq!(
+        Pointers::headers(),
+        ["alias", "boxed", "cow", "borrowed", "by_ref", "nested"]
+    );
+    let text = String::from("owned");
+    let score = 2.25;
+    let some = Pointers {
+        alias: Some(0.125),
+        boxed: "boxed text".into(),
+        cow: Cow::Borrowed(text.as_str()),
+        borrowed: "borrowed",
+        by_ref: &score,
+        nested: Some("inner".into()),
+    };
+    // precision 은 f64 에만 적용되고 문자열(Box<str>·Cow<str>)은 잘리지 않는다
+    assert_eq!(
+        some.row(),
+        ["0.12", "boxed text", "owned", "borrowed", "2.2", "inner"]
+    );
+    let none = Pointers {
+        alias: None,
+        boxed: "".into(),
+        cow: Cow::Owned(String::new()),
+        borrowed: "",
+        by_ref: &score,
+        nested: None,
+    };
+    assert_eq!(none.row(), ["", "", "", "", "2.2", ""]);
+}
+
+#[test]
+fn derive_display_속성과_직접_구현한_cell() {
+    assert_eq!(Custom::headers(), ["id", "share"]);
+    let row = Custom {
+        doi: Doi("10.1/x"),
+        share: Some(Percent(0.256)),
+    };
+    assert_eq!(row.row(), ["doi:10.1/x", "25.6%"]);
+    let none = Custom {
+        doi: Doi("10.1/y"),
+        share: None,
+    };
+    assert_eq!(none.row(), ["doi:10.1/y", ""]);
 }
 
 #[test]

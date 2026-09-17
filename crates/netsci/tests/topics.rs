@@ -97,16 +97,16 @@ fn 분류에_따라_다른_그래프를_만든다() {
     ];
     let topics = ConceptGraph::build(&works, &ConceptFilter::default());
     assert_eq!(
-        topics.names,
+        topics.names(),
         ["Battery", "Electrolyte"],
         "score 0.1 토픽은 거른다"
     );
-    assert_eq!(topics.levels, [None, None]);
-    assert_eq!(topics.works, [2, 1]);
+    assert_eq!(topics.levels(), [None, None]);
+    assert_eq!(topics.works(), [2, 1]);
 
     let concepts = ConceptGraph::build(&works, &ConceptFilter::concepts());
-    assert_eq!(concepts.names, ["Anode", "Lithium (medication)"]);
-    assert_eq!(concepts.levels, [Some(2), Some(2)]);
+    assert_eq!(concepts.names(), ["Anode", "Lithium (medication)"]);
+    assert_eq!(concepts.levels(), [Some(2), Some(2)]);
 
     let stats = commands::stats(&works);
     assert_eq!((stats.topics, stats.concepts), (2, 2));

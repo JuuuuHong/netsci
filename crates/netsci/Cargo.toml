@@ -14,3 +14,10 @@ clap.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 netsci-report = { path = "../netsci-report" }
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "analysis"
+harness = false

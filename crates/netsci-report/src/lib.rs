@@ -3,6 +3,9 @@
 //! 행 타입은 `#[derive(Report, Serialize)]` 로 만든다. derive 매크로는 이 크레이트가 재수출하므로
 //! 사용자는 `netsci-report` 하나만 의존하면 된다 (`serde` 와 `serde_derive` 의 관계와 같다).
 
+mod cell;
+
+pub use cell::{Cell, PrecisionCell};
 pub use netsci_report_derive::Report;
 
 /// 출력 행 하나를 열 이름과 셀 문자열로 표현한다.

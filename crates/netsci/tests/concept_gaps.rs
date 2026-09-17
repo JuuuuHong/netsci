@@ -89,17 +89,17 @@ fn 같은_개념이_두_번_붙어도_한_번만_센다() {
     w.concepts.push(concept("A", 2, 0.8));
     let graph = ConceptGraph::build(&[w], &ConceptFilter::concepts());
     assert_eq!(graph.concept_count(), 2);
-    assert_eq!(graph.works, vec![1, 1]);
+    assert_eq!(graph.works(), [1, 1]);
     assert_eq!(graph.observed(0, 1), 1);
 }
 
 #[test]
 fn 동시출현_그래프_가중치() {
     let graph = ConceptGraph::build(&hand_corpus(), &ConceptFilter::concepts());
-    assert_eq!(graph.n_works, 10);
+    assert_eq!(graph.n_works(), 10);
     assert_eq!(graph.concept_count(), 4, "Chemistry·Noise 는 걸러진다");
-    let id = |n: &str| graph.index[&format!("C-{n}")];
-    let works = |n: &str| graph.works[id(n) as usize];
+    let id = |n: &str| graph.concept(&format!("C-{n}")).unwrap();
+    let works = |n: &str| graph.works()[id(n) as usize];
     assert_eq!(
         [works("A"), works("B"), works("C"), works("D")],
         [8, 6, 5, 4]
@@ -118,8 +118,8 @@ fn 동시출현_그래프_가중치() {
 #[test]
 fn gaps_손계산과_일치하고_정렬된다() {
     let graph = ConceptGraph::build(&hand_corpus(), &ConceptFilter::concepts());
-    let gaps = find_gaps(&graph, 3);
-    let name = |c: u32| graph.names[c as usize].as_str();
+    let gaps = find_gaps(&graph, 3, usize::MAX);
+    let name = |c: u32| graph.names()[c as usize].as_str();
 
     let pairs: Vec<_> = gaps.iter().map(|g| (name(g.a), name(g.b))).collect();
     // lift 오름차순, A-B 와 A-D 는 lift 1.25 동점 → expected 내림차순
@@ -145,16 +145,53 @@ fn gaps_손계산과_일치하고_정렬된다() {
 #[test]
 fn gaps_min_works_미만_개념은_후보가_아니다() {
     let graph = ConceptGraph::build(&hand_corpus(), &ConceptFilter::concepts());
-    let gaps = find_gaps(&graph, 5);
-    let name = |c: u32| graph.names[c as usize].as_str();
+    let gaps = find_gaps(&graph, 5, usize::MAX);
+    let name = |c: u32| graph.names()[c as usize].as_str();
     let pairs: Vec<_> = gaps.iter().map(|g| (name(g.a), name(g.b))).collect();
     assert_eq!(pairs, [("B", "C"), ("A", "C"), ("A", "B")], "D(4건) 제외");
 }
 
 #[test]
+fn gaps_top_은_전체_순위의_앞부분과_같다() {
+    let graph = ConceptGraph::build(&hand_corpus(), &ConceptFilter::concepts());
+    let all = find_gaps(&graph, 3, usize::MAX);
+    assert_eq!(all.len(), 4);
+    for top in 0..=all.len() + 1 {
+        assert_eq!(
+            find_gaps(&graph, 3, top),
+            all[..top.min(all.len())],
+            "top {top}"
+        );
+    }
+}
+
+#[test]
+fn gaps_순위와_이름이_모두_같으면_개념_번호_순이다() {
+    // "Twin" 이름의 서로 다른 개념 둘(C-z 가 먼저 나와 번호가 작다)이 "Hub" 와 똑같은 통계를 가진다
+    let works: Vec<Work> = (1..=10)
+        .map(|i| {
+            let mut w = work(i, &["Hub"]);
+            w.concepts.push(Concept {
+                id: if i <= 5 { "C-z" } else { "C-a" }.to_string(),
+                name: "Twin".to_string(),
+                level: 2,
+                score: 0.5,
+            });
+            w
+        })
+        .collect();
+    let graph = ConceptGraph::build(&works, &ConceptFilter::concepts());
+    let id = |c: u32| graph.ids()[c as usize].as_str();
+    let all = find_gaps(&graph, 1, usize::MAX);
+    let pairs: Vec<_> = all.iter().map(|g| (id(g.a), id(g.b))).collect();
+    assert_eq!(pairs, [("C-Hub", "C-z"), ("C-Hub", "C-a")]);
+    assert_eq!(find_gaps(&graph, 1, 1), all[..1]);
+}
+
+#[test]
 fn gaps_빈_코퍼스() {
     let graph = ConceptGraph::build(&[], &ConceptFilter::concepts());
-    assert!(find_gaps(&graph, 0).is_empty());
+    assert!(find_gaps(&graph, 0, usize::MAX).is_empty());
 }
 
 #[test]
@@ -185,9 +222,9 @@ fn top_neighbor_는_가중치와_이름이_같으면_id_로_고른다() {
     for _ in 0..20 {
         let works = vec![tagged(1, "C-z"), tagged(2, "C-a")];
         let graph = ConceptGraph::build(&works, &ConceptFilter::concepts());
-        let hub = graph.index["C-Hub"] as usize;
+        let hub = graph.concept("C-Hub").unwrap() as usize;
         let best = graph.top_neighbors()[hub].unwrap();
-        assert_eq!(graph.ids[best as usize], "C-a");
+        assert_eq!(graph.ids()[best as usize], "C-a");
     }
 }
 

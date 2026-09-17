@@ -1,0 +1,5 @@
+error: `display` cannot be combined with `precision`
+ --> tests/ui/display_with_precision.rs:5:14
+  |
+5 |     #[report(display, precision = 2)]
+  |              ^^^^^^^
