@@ -115,7 +115,7 @@
   - **예산 중단은 더 받을 페이지가 있을 때만**: 마지막 페이지나 `limit` 에 도달한 페이지에서 한도가 낮으면 수집은 완료이므로 `stopped_by_budget = false`.
   - **실패 응답에서도 남은 한도 확인**: 429/5xx 에서 `x-ratelimit-remaining-usd < 0.01` 이면 재시도하지 않고 즉시 에러.
   - **재시도 대기 상한 60초**: 한도 소진 시 자정까지의 긴 `Retry-After` 에 세 번 묶이는 것을 막는다.
-  - **PageRank 입력 방어**: 범위 밖 노드 번호의 간선은 출차수에서도 빼서 결과 합 1 을 유지한다 (`CitationGraph::build` 는 이런 입력을 만들지 않는다).
+  - **PageRank 입력 방어**: 범위 밖 노드 번호의 간선은 출차수에서도 빼서 결과 합 1 을 유지한다 (`CitationGraph::build` 는 이런 입력을 만들지 않는다). → 2026-09-17 대체: 아래 "인용·개념 그래프 캡슐화" 에서 `pagerank` 가 `&CitationGraph` 만 받게 되어 방어 코드를 뺐다.
 
 ## 2026-09-17 2차 코드 리뷰 반영
 - 선택지: 중간 등급만 / 낮음 등급까지 전부
@@ -129,7 +129,7 @@
   - **`--min-score` 는 0~1 의 유한한 수만**: `NaN` 은 모든 비교가 거짓이라 빈 표를 조용히 낸다.
   - **Broken pipe 는 정상 종료**: `netsci ... | head` 에서 패닉(종료 코드 101)하지 않게 한다.
   - **render 는 셀 수를 헤더 수에 맞춘다**: 계약을 어긴 수동 `Report` 구현에서도 표와 CSV 가 같은 모양이 된다.
-  - **derive**: `Option` 판별 시 `macro_rules!` 그룹·괄호 타입을 벗긴다. `precision` 을 정수·`bool`·`char`·`String`·`str`(및 그 `Option`)에 쓰면 컴파일 에러(문자열은 잘리고 정수는 무시되는 함정). `skip = …` 에는 "값을 받지 않는다" 에러, `precision` 은 `u16` 범위 밖이면 속성 위치에 에러.
+  - **derive**: `Option` 판별 시 `macro_rules!` 그룹·괄호 타입을 벗긴다. `precision` 을 정수·`bool`·`char`·`String`·`str`(및 그 `Option`)에 쓰면 컴파일 에러(문자열은 잘리고 정수는 무시되는 함정). `skip = …` 에는 "값을 받지 않는다" 에러, `precision` 은 `u16` 범위 밖이면 속성 위치에 에러. → 2026-09-17 대체: `Option` 판별과 `precision` 타입 이름 목록은 아래 "derive 의 타입 판정을 트레이트로" 에서 트레이트 구현 판정으로 바꿨다.
   - **테스트 보강**: PageRank 정확값·고정점 테스트, 로컬 TCP 서버로 `HttpClient` 재시도·한도·요청 간격 테스트(`tokio` 기능을 늘리지 않으려고 표준 라이브러리 `TcpListener` 사용, 요청 간격 기대값은 구현 상수 대신 명세 값 100ms 를 직접 적음). trybuild 는 명세의 3건에 새 에러 3건을 더했다.
   - **Linux Docker 권한**: 이미지는 명세대로 비루트로 두고, README 에 Linux 용 `--user "$(id -u):$(id -g)"` 명령을 따로 적었다 (명세의 사용 예는 그대로 유지).
     Docker Desktop(macOS) 바인드 마운트는 소유권을 바꿔 보여 주므로, Docker VM 의 Linux 파일시스템(named volume)에 uid 1000·755 디렉터리를 만들어 확인했다: 기본 실행(uid 10001)은 `Permission denied`, `--user 1000:1000` 은 성공, root 소유 디렉터리는 `--user` 로도 실패(그래서 `mkdir -p data` 를 먼저 안내).
@@ -249,3 +249,36 @@
   - **리튬 2018년 편향**: 인용 기회뿐 아니라, 2018년 논문 362편 중 226편이 코퍼스 안으로 나가는 간선이 없는 dangling 노드라는 앞쪽 절단 효과를 더했다
 - 함께 추가: 코퍼스 정의(OpenAlex 검색은 전문 대상, 제목·초록에 검색 구가 있는 논문은 리튬 862편·RAG 252편), 문헌 기반 발견(Swanson ABC 모델)과의 관계, 한계(피인용 필터의 생존 편향, 독립 가정 위반 — 리튬 concepts 후보에서 우연한 공존 0 기대 약 29.5쌍 대 실제 321쌍, 복수형 불일치, `unverifiable` 의 의미, 시간 검증 없음)
 - 코드: `api_key` 가 들어간 요청 URL 이 reqwest 에러 메시지로 새지 않도록 URL 을 떼고, `fetch --limit 0` 을 인자 검사에서 거절한다(기존 `works.jsonl` 을 빈 파일로 덮어썼다)
+
+## 2026-09-17 derive 의 타입 판정을 트레이트로
+- 선택지: 타입 토큰으로 추측(경로 끝 세그먼트가 `Option` 인지, 이름이 정수·문자열 목록에 있는지) / 셀 변환 트레이트를 두고 컴파일러가 판정
+- 선택: `netsci_report::Cell`(`fn cell(&self) -> String`)과 `netsci_report::PrecisionCell`(`fn cell_with_precision(&self, precision: usize) -> String`) 트레이트. 매크로는 `<필드 타입 as ::netsci_report::Cell>::cell(&self.field)` 를 필드 타입 span 으로 내보내기만 한다
+- 이유:
+  - 토큰 추측은 타입의 이름만 본다. `type MaybeScore = Option<f64>` 는 `Option` 으로 인식되지 않아 컴파일 에러가 났고(`Option<f64>` 는 `Display` 가 아니다), `Box<str>`·`Cow<str>` 는 목록에 없어 `precision` 이 허용돼 문자열이 잘렸다. 트레이트 구현은 별칭을 푼 실제 타입으로 판정된다
+  - `Cell` 은 정수·`f32`·`f64`·`bool`·`char`·`String`·`str`·`Cow<'_, str>`·`&T`·`Box<T>`·`Option<T>`(None → 빈 칸)에, `PrecisionCell` 은 `f32`·`f64`·`&T`·`Option<T>` 에만 구현한다. 부동소수가 아닌 타입에 `precision` 을 쓰면 "구현이 없다" 는 에러가 된다
+  - `impl<T: Display> Cell for T` 포괄 구현은 두지 않았다. `Option<T>` 구현과 겹친다고 보고 거부된다(E0119, 상위 크레이트인 std 가 나중에 `Option` 에 `Display` 를 구현할 수 있다는 규칙). 그래서 표준 타입마다 구현하고, 사용자 정의 `Display` 타입에는 `#[report(display)]`(`ToString::to_string` 호출, `precision` 과 함께 쓰면 에러)를 둔다. `Option<사용자 타입>` 은 `display` 로 `None` 을 처리할 수 없으므로 그 타입에 `Cell` 을 구현한다
+  - 호출을 `<T as Trait>::method` 로 만든 것은 에러 위치 때문이다. `Cell::cell(&self.field)` 처럼 `Self` 를 추론에 맡기면 E0277 의 주 위치가 `#[derive(Report)]` 였고, 한정 경로로 바꾸자 사용자가 쓴 필드 타입(`name: String` 의 `String`)을 가리켰다. 트레이트에 `#[diagnostic::on_unimplemented]` 로 `#[report(display)]`·부동소수 전용이라는 안내를 붙였다. 괄호 타입 `(T)` 은 한정 경로에 넣으면 사용자 span 에 `unused_parens` 경고가 나서 괄호만 벗긴다
+  - 트레이트는 숨기지 않고 공개한다. 사용자가 자기 타입에 `Cell` 을 구현해야 `Option` 안에 넣을 수 있기 때문이다. 제네릭 구조체에는 명세(§6.3)대로 바운드를 더하지 않으므로 `T: Cell` 을 사용자가 적는다
+- 결과: 기존 행 타입의 출력 문자열은 바뀌지 않았다(`f64` 의 `format!("{:.N}")` 와 `Display` 를 그대로 쓴다. 실제 코퍼스 두 개로 모든 명령·형식 48개 출력을 변경 전후 바이트 비교). trybuild: `precision_on_string` 은 별칭 뒤 `Option<u32>`·`Cow<str>` 를 더해 트레이트 에러로, `non_cell_field`(사용자 정의 타입·그 `Option`)·`display_with_precision` 추가(8건)
+
+## 2026-09-17 벤치마크(criterion)와 상위 N 선택
+- 선택지: 측정 없이 복잡도 주석만 / 합성 코퍼스 벤치마크를 두고 잰 값으로 판단
+- 선택: `criterion`(dev-dependency, 기본 기능 끔) 벤치마크 `crates/netsci/benches/analysis.rs`. 명세 §1 목록 밖 의존성이지만 벤치마크 전용이라 바이너리에 들어가지 않는다
+- 합성 코퍼스: 외부 난수 크레이트 없이 xorshift64* 로 만든 3만 편. 실제 전량 코퍼스(따옴표 없는 리튬 26,685편)에서 잰 모양에 맞춰 concept 논문당 약 7개(레이블 1,000개, 앞 번호일수록 잦은 분포), 토픽 3개(레이블 250개), 초록 150 단어(일부는 개념 이름), 참조 40개 중 10% 내부로 둔다. `min_works = 15` 에서 후보 개념 1,000개(약 50만 쌍, `expected ≥ 3` 통과 38,270쌍)로 실제 코퍼스의 1,064개(약 56만 쌍, 통과 25,741쌍)와 규모가 비슷하다
+- 상위 N: `gaps`·`verify` 는 `find_gaps` 결과에서 상위 `top` 개만 쓰고 `concepts`·`citations` 도 상위 `top` 개만 출력하므로, 전체 정렬 후 자르던 것을 `select_nth_unstable_by` 로 앞 `top` 개를 가른 뒤 그 부분만 정렬한다(`top.rs` 의 `sort_top_by`). `find_gaps` 는 `top` 인자를 받는다
+- 출력이 같다는 근거: 불안정 선택·정렬은 비교가 전순서일 때만 안정 정렬 후 자른 결과와 같다. `citations` 는 마지막 키가 노드마다 다른 id 라 이미 전순서다. `gaps` 와 `concepts` 는 표시 이름이 같은 서로 다른 개념(id 만 다름)에서 `Equal` 이 나올 수 있어 마지막 키로 개념 번호를 더했다. 예전 안정 정렬은 이런 동점을 입력 순서로 남겼는데, 입력이 (이름, 번호) 순 후보 순회(`gaps`)이거나 번호 순(`concepts`)이라 같은 이름 안에서는 번호 순과 일치한다. 무작위 입력으로 전체 정렬 결과와 비교하는 단위 테스트와, 이름이 같은 개념쌍의 순서 테스트를 더했다
+- 측정(Apple Silicon 로컬, criterion 중앙값): `find_gaps` 상위 200 은 전체 정렬 후 자르기 3.94 ms → 1.60 ms. 같은 실행에서 코드가 바뀌지 않은 `ConceptGraph::build`(concepts) 38.5 ms, `verify_gaps` 상위 20 425 ms, `CitationGraph::build` 51.4 ms, `pagerank` 8.85 ms 였다. 공백 탐지보다 텍스트 검증이 두 자릿수 이상 비싸다
+- 주석 수정: `gaps.rs` 의 "K 는 수백 수준" 은 재 보니 README 코퍼스에서 concepts 217(리튬)·31(RAG), topics 35·23 이고, 따옴표 없는 리튬 26,685편에서는 concepts 1,064·topics 249 였다. `verify.rs` 의 "한 번 훑는 수준" 은 개념마다 텍스트 전체를 훑어 C × 텍스트 총 길이에 비례한다는 설명으로 바꿨다
+
+## 2026-09-17 비동기 런타임은 current_thread
+- 선택지: 동기 HTTP 클라이언트 / tokio 멀티 스레드 런타임 / tokio 현재 스레드 런타임
+- 선택: tokio `current_thread` (`#[tokio::main(flavor = "current_thread")]`), 기능은 `rt`·`macros`·`fs`·`time`
+- 비동기를 쓰는 이유: HTTP 클라이언트가 명세의 `reqwest` 비동기 클라이언트이고(블로킹 클라이언트는 내부에 런타임을 따로 띄운다), 요청 간격·재시도 대기를 `tokio::time::sleep` 으로 하며, 가짜 클라이언트 테스트가 `WorksClient` 트레이트의 `Future` 를 그대로 기다린다
+- 멀티 스레드가 필요 없는 이유: 다음 페이지 요청에는 직전 응답의 `next_cursor` 가 필요해 페이지 수집이 본질적으로 순차다. 동시에 돌 작업이 없으니 워커 스레드 풀은 쓰이지 않는다. 분석 명령(`stats`·`gaps` 등)은 비동기 작업을 만들지 않고 `main` 안에서 동기로 계산한다. `#[tokio::test]` 는 원래 기본이 현재 스레드다. 그래서 `rt-multi-thread` 기능을 뺐다. `reqwest` 의 `json` 기능도 응답을 `text()` 로 받아 직접 파싱하므로 쓰이지 않아 뺐다
+- 블로킹 입출력: 캐시 페이지는 `tokio::fs` 로 읽고 쓰는데 `works.jsonl` 만 동기 `corpus::write_jsonl` 을 비동기 함수 안에서 바로 불렀다. 현재 스레드 런타임에서는 그동안 런타임 전체가 멈춘다. 지금은 함께 도는 작업이 없어 드러나지 않지만, 비동기 함수가 블로킹하지 않는다는 약속을 지키려고 `spawn_blocking` 으로 보내 블로킹 입출력이 모두 블로킹 스레드 풀에서 돌게 맞췄다. 작업 패닉은 `resume_unwind` 로 이어 전파하고, 런타임 종료로 인한 취소는 `FetchError::Io` 로 돌려준다
+
+## 2026-09-17 인용·개념 그래프 캡슐화
+- 선택지: 공개 필드 + 사용하는 쪽의 방어 코드 / 비공개 필드 + 불변식을 세우는 빌더와 읽기 전용 접근자
+- 선택: 후자. `CitationGraph`·`ConceptGraph` 의 필드를 비공개로 하고 `build` 로만 만든다. 접근자는 명령·테스트가 쓰는 것만 둔다(`ids()`·`node(id)`·`work_index(node)`·`adjacency()`·`total_references()` / `n_works()`·`ids()`·`names()`·`levels()`·`works()`·`concept(id)`)
+- 이유: 공개 필드면 누구든 범위 밖 노드 번호나 중복 간선이 든 인접 리스트를 만들 수 있어, `pagerank(&[Vec<usize>])` 가 범위 밖 간선을 걸러 출차수를 다시 세는 방어 코드를 가졌다. 이 경로는 `CitationGraph::build` 가 절대 만들지 않는 입력을 위한 것이었다. `pagerank(&CitationGraph)` 로 받으면 "노드 번호가 범위 안, 리스트마다 정렬·중복·자기 간선 없음" 이 타입으로 보장되어 방어 코드와 그 테스트(범위 밖 간선 무시)를 뺐다. `ConceptGraph` 도 이름·레벨·등장 수 벡터의 길이와 `(a, b)` 키의 `a < b` 가 `build` 에서만 세워진다
+- 테스트: PageRank 테스트(합 1, 두 노드 정확값, 명세 식 고정점, 순환, 별, dangling 만, 빈 그래프)는 인접 리스트 모양대로 서로 인용하는 작품 목록을 공개 빌더로 만들어 그대로 옮기고, 빌더가 같은 인접 리스트를 냈는지도 확인한다. 범위 밖 간선 테스트는 "코퍼스 밖·자기·중복 참조는 간선과 출차수에 들어가지 않는다" 테스트로 바꿨다

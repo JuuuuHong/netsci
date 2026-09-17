@@ -398,6 +398,28 @@ rank  concept                         level  works  strength  top_neighbor
 - **크레이트 3개** — proc-macro 크레이트는 트레이트를 export 할 수 없어 `netsci-report`(트레이트·포맷터)와 `netsci-report-derive`(매크로)로 나누고, 전자가 매크로를 재수출합니다.
 - **결정적 출력** — 모든 순위에 보조 정렬 키를 두고, gaps 의 lift 비교는 부동소수 대신 정수 교차곱으로 해 동점이 흔들리지 않습니다.
 - **Docker** — BuildKit 캐시 마운트로 의존성 재컴파일을 피하고, 빌드 이미지를 실행 이미지와 같은 bookworm 으로 맞춰 glibc 불일치를 막았습니다.
+- **derive 는 타입을 추측하지 않습니다** — 매크로는 `<필드 타입 as netsci_report::Cell>::cell(..)` 호출만 만들고, 어떤 타입이 셀이 되는지·`precision` 을 받는지는 `Cell`·`PrecisionCell` 트레이트 구현으로 컴파일러가 판정합니다. 타입 별칭(`type S = Option<f64>`)도 실제 타입대로 처리되고, 문자열에 `precision` 을 붙이면 필드 타입 위치에 컴파일 에러가 납니다.
+- **불변식이 있는 그래프는 필드를 숨깁니다** — `CitationGraph`·`ConceptGraph` 는 `build` 로만 만들고 읽기 전용 접근자만 둡니다. PageRank 는 `&CitationGraph` 를 받아 범위 밖 간선 같은 잘못된 입력을 타입으로 배제합니다.
+- **상위 N 만 정렬** — 순위 명령은 전체 정렬 대신 `select_nth_unstable_by` 로 앞 N 개를 가른 뒤 그 부분만 정렬합니다. 비교를 전순서로 만들어(이름이 같은 개념은 번호로) 출력은 전체 정렬과 같습니다.
+- **현재 스레드 런타임** — 비동기는 `reqwest` 요청과 대기에만 쓰고, cursor 페이지네이션은 본질적으로 순차라 워커 스레드 풀 없이 `current_thread` 로 돌립니다. `works.jsonl` 쓰기 같은 블로킹 입출력은 `spawn_blocking` 으로 보냅니다.
+
+## 벤치마크
+
+`cargo bench -p netsci --bench analysis` 는 결정적 합성 코퍼스(3만 편, concept 레이블 1,000개·논문당 약 7개, 토픽 3개, 초록 150 단어, 참조 40개 중 10% 내부)로 분석 단계를 잽니다.
+`min_works = 15` 에서 후보 개념 1,000개(약 50만 쌍)로, 따옴표 없이 모은 리튬 26,685편 코퍼스의 1,064개와 규모를 맞췄습니다. 수치는 Apple Silicon 로컬, criterion 중앙값입니다.
+
+| 단계 | 시간 |
+|---|---:|
+| `ConceptGraph::build` (concepts) | 38.5 ms |
+| `ConceptGraph::build` (topics) | 7.9 ms |
+| `find_gaps` 상위 200 — 전체 정렬 후 자르기 | 3.94 ms |
+| `find_gaps` 상위 200 — 상위 N 선택 | 1.60 ms |
+| `verify_gaps` 상위 20 (초록 3만 편 텍스트 검색) | 425 ms |
+| `CitationGraph::build` | 51.4 ms |
+| `pagerank` (간선 약 12만 개) | 8.85 ms |
+
+공백 탐지는 전수 순회로도 수 ms 이고, 비용은 개념마다 텍스트 전체를 훑는 `verify` 에 몰려 있습니다.
+전후 비교는 각각 한 번(표본 10개, 측정 5초)만 잰 값입니다. 코드를 바꾸지 않은 단계도 실행마다 10% 안팎 흔들렸으므로, 상위 N 선택의 효과는 "수 배 차이" 수준으로만 읽어 주세요.
 
 ## 한계
 

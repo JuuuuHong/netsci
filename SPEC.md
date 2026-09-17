@@ -35,14 +35,15 @@
 
 | 크레이트 | 용도 |
 |---|---|
-| `tokio` (`rt-multi-thread`, `macros`, `fs`, `time`) | 비동기 런타임 |
-| `reqwest` (`default-features = false`, `features = ["json", "rustls-tls"]`) | HTTP. OpenSSL 의존을 없애 Docker 이미지를 단순하게 |
+| `tokio` (`rt`, `macros`, `fs`, `time`) | 비동기 런타임. 페이지 수집이 cursor 로 순차라 현재 스레드 런타임만 쓴다 (2026-09-17 `rt-multi-thread` 에서 변경) |
+| `reqwest` (`default-features = false`, `features = ["rustls-tls"]`) | HTTP. OpenSSL 의존을 없애 Docker 이미지를 단순하게 (응답은 `text()` 로 받아 직접 파싱하므로 `json` 기능은 2026-09-17 뺐다) |
 | `serde`, `serde_json` | 직렬화 |
 | `clap` (`derive`) | CLI |
 | `anyhow` | 바이너리 에러 처리 |
 | `thiserror` | 라이브러리 에러 타입 |
 | `syn` (`full`), `quote`, `proc-macro2` | derive 매크로 |
 | `trybuild` (dev) | 매크로 컴파일 실패 테스트 |
+| `criterion` (dev, `default-features = false`) | 분석 단계 벤치마크 (2026-09-17 추가) |
 
 - **라이브러리 코드에서 `unwrap()`/`expect()` 금지** (테스트 코드는 허용)
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` 가 모두 통과해야 한다
@@ -65,7 +66,9 @@ netsci/
 ├─ data/                         # .gitignore 대상
 └─ crates/
    ├─ netsci-report/             # Report 트레이트 + 출력 포맷터 + derive 재수출
-   │  └─ src/lib.rs
+   │  └─ src/
+   │     ├─ lib.rs
+   │     └─ cell.rs              # Cell·PrecisionCell 셀 변환 트레이트 (2026-09-17 추가)
    ├─ netsci-report-derive/      # proc-macro = true
    │  ├─ src/lib.rs
    │  └─ tests/                  # trybuild
@@ -82,7 +85,9 @@ netsci/
       │  ├─ citation.rs          # 인용 그래프 + PageRank
       │  ├─ concept.rs           # 개념 동시출현 그래프 + 중심성
       │  ├─ gaps.rs              # 공백 개념쌍 탐지
+      │  ├─ top.rs               # 상위 N 개만 정렬 (2026-09-17 추가)
       │  └─ verify.rs            # 제목·초록 텍스트 검증 (2026-09-17 추가)
+      ├─ benches/analysis.rs     # criterion 벤치마크, 합성 코퍼스 (2026-09-17 추가)
       └─ tests/
          ├─ fixtures/works_page.json   # 실제 OpenAlex 응답 (이미 들어 있음)
          └─ *.rs
@@ -212,6 +217,7 @@ netsci fetch --query '"lithium metal anode"' \
 - 노드: 코퍼스 안의 작품. 간선: `A → B` (A 가 B 를 인용), **B 가 코퍼스 안에 있을 때만**
 - 자기 인용 간선과 중복 간선은 제거
 - 표현: `Vec<Vec<usize>>` 인접 리스트 + `HashMap<String, usize>` id 인덱스
+- 필드는 비공개이고 `CitationGraph::build` 로만 만든다. 인접 리스트의 노드 번호가 범위 안이고 정렬·중복 없음이 항상 성립하므로 PageRank 는 `&CitationGraph` 를 받아 범위 검사를 하지 않는다 (개념 그래프도 같은 방식, 2026-09-17)
 
 ### 5.2 분류 필터
 `concepts`·`gaps`·`verify`·`evidence` 는 `--taxonomy topics|concepts` 로 분류를 고른다. 기본은 그래프 명령(`concepts`·`gaps`)이 **topics**, 텍스트 검증 명령(`verify`·`evidence`)이 **concepts** 다.
@@ -243,6 +249,7 @@ PR_new[v] = (1 - d)/N  +  d * ( Σ_{u→v} PR[u]/outdeg(u)  +  dangling_sum/N )
 
 > **복잡도 메모.** 후보 개념이 K 개면 쌍은 K²/2. 동시출현 카운트는 논문마다 개념쌍을 세어 `HashMap<(u32,u32), u32>` 에 쌓고,
 > 후보 쌍 순회는 그 맵을 조회한다. K 가 수백 수준이라 전수 순회로 충분하다. 이 판단을 코드 주석에 남긴다.
+> (2026-09-17 측정: `min_works = 15` 에서 README 코퍼스의 concepts K 는 217·31, topics 35·23. 따옴표 없는 리튬 26,685편은 concepts 1,064(약 56만 쌍)·topics 249. 전수 순회는 유지하고 정렬만 상위 N 선택으로 바꿨다)
 
 ### 5.5 텍스트 검증
 - 텍스트 = 제목 + 초록. 소문자화하고 영숫자가 아닌 문자를 공백 하나로 접은 뒤 양끝에 공백을 둔다
@@ -292,39 +299,48 @@ struct GapRow {
     internal_id: u32,
 }
 ```
-→ 다음과 동등한 코드:
+→ 다음과 동등한 코드 (2026-09-17 변경: 타입 판정을 트레이트로):
 ```rust
 impl ::netsci_report::Report for GapRow {
     fn headers() -> Vec<&'static str> { vec!["rank", "concept_a", "lift"] }
     fn row(&self) -> Vec<String> {
         vec![
-            ::std::string::ToString::to_string(&self.rank),
-            ::std::string::ToString::to_string(&self.a),
-            format!("{:.3}", self.lift),
+            <usize as ::netsci_report::Cell>::cell(&self.rank),
+            <String as ::netsci_report::Cell>::cell(&self.a),
+            <f64 as ::netsci_report::PrecisionCell>::cell_with_precision(&self.lift, 3),
         ]
     }
 }
 ```
+- 셀 변환은 `netsci-report` 의 공개 트레이트가 맡는다. 매크로는 필드 타입을 토큰으로 판별하지 않고, 위 호출을 필드 타입의 span 으로 내보내기만 한다. 타입이 트레이트를 구현하지 않으면 에러가 필드 타입 위치에 난다
+```rust
+pub trait Cell { fn cell(&self) -> String; }
+pub trait PrecisionCell { fn cell_with_precision(&self, precision: usize) -> String; }
+```
+- `Cell`: 정수 전부, `f32`, `f64`, `bool`, `char`, `String`, `str`, `Cow<'_, str>`, `&T`, `Box<T>`, `Option<T>`(`None` → 빈 문자열)
+- `PrecisionCell`: `f32`, `f64`, `&T`, `Option<T>`(`None` → 빈 문자열)
+- `impl<T: Display> Cell for T` 포괄 구현은 `Option<T>` 구현과 겹쳐(E0119) 두지 않는다. 사용자 정의 `Display` 타입은 `#[report(display)]` 를 쓰거나 `Cell` 을 구현한다
 
 ### 6.3 지원 범위
 
 | 입력 | 처리 |
 |---|---|
 | named field 구조체 | 지원 |
-| 필드 타입 | `Display` 를 구현한 모든 타입. `Option<T>` 는 **`None` 이면 빈 문자열** (타입 경로 끝 세그먼트가 `Option` 인지로 판별) |
+| 필드 타입 | `netsci_report::Cell` 을 구현한 타입 (§6.2). `Option<T>` 는 **`None` 이면 빈 문자열**. 타입 별칭도 실제 타입으로 판정된다 |
 | `#[report(rename = "...")]` | 열 이름 변경 |
 | `#[report(skip)]` | 열에서 제외 |
-| `#[report(precision = N)]` | `format!("{:.N}")` 적용 |
+| `#[report(precision = N)]` | 소수 N 자리. 필드 타입이 `PrecisionCell` 을 구현해야 한다 (부동소수가 아니면 필드 타입 위치에 컴파일 에러) |
+| `#[report(display)]` | `ToString::to_string` 으로 문자열화. `Cell` 이 없는 사용자 정의 `Display` 타입용, `precision` 과 함께 쓰면 컴파일 에러 (2026-09-17 추가) |
 | 튜플 구조체 · unit 구조체 · enum · union | **컴파일 에러** — `"Report can only be derived for structs with named fields"` |
 | 알 수 없는 속성 키 (`#[report(foo)]`) | **컴파일 에러**, 해당 토큰 span 에 표시 |
 | `skip` 과 다른 속성을 함께 씀 | **컴파일 에러** |
 
 - 에러는 `panic!` 이 아니라 `syn::Error::new_spanned(..).to_compile_error()` 로 낸다
-- 제네릭 구조체는 `split_for_impl()` 로 제네릭을 그대로 넘긴다 (별도 바운드 추가는 하지 않는다)
+- 제네릭 구조체는 `split_for_impl()` 로 제네릭을 그대로 넘긴다 (별도 바운드 추가는 하지 않는다. 타입 매개변수 필드에는 사용자가 `T: Cell` 을 적는다)
 
 ### 6.4 매크로 테스트
-- `netsci-report` 쪽 단위 테스트: 위 `GapRow` 의 `headers()`/`row()` 결과 검증, `Option` None/Some, 제네릭 구조체
-- `trybuild` compile-fail 6건: 튜플 구조체, 알 수 없는 속성, `skip` + `rename` 동시 사용(명세 3건) + `skip = …` 값, 문자열·정수 필드의 `precision`, 범위 밖 `precision`(2026-09-17 추가). `.stderr` 파일 포함
+- `netsci-report` 쪽 단위 테스트: 위 `GapRow` 의 `headers()`/`row()` 결과 검증, `Option` None/Some, 제네릭 구조체, 타입 별칭 `Option<f64>`·`Box<str>`·`Cow<str>`·수명 있는 `&str`, `#[report(display)]` 와 직접 구현한 `Cell`
+- `trybuild` compile-fail 8건: 튜플 구조체, 알 수 없는 속성, `skip` + `rename` 동시 사용(명세 3건) + `skip = …` 값, 문자열·정수(별칭 뒤 포함)·`Cow<str>` 필드의 `precision`, 범위 밖 `precision`, `Cell` 이 없는 필드, `display` + `precision`(2026-09-17 추가). `.stderr` 파일 포함
 
 ---
 
@@ -351,7 +367,7 @@ impl ::netsci_report::Report for GapRow {
 | 누락 필드 | `display_name: null`, `concepts` 키 없음 → 에러 없이 기본값 |
 | fetch 캐시 | 임시 디렉터리에 `page-0000.json` 을 미리 두면 HTTP 를 호출하지 않는다 (클라이언트를 트레이트로 추상화해 가짜 구현 주입) |
 | query.json 불일치 | 다른 `--query`·`--filter` 로 같은 `--data` 에 fetch → 에러. `--limit` 만 다르면 캐시 재사용·기록 갱신(늘리면 이어받기, 줄이면 자르기). 존재 확인 입출력 실패는 에러 |
-| PageRank | ① 합이 1 ② 3노드 순환에서 모두 1/3 ③ 별 모양(모두가 중심을 인용)에서 중심이 최대 ④ dangling 노드만 있는 그래프에서 균등 ⑤ 빈 그래프에서 패닉 없이 빈 결과 |
+| PageRank | ① 합이 1 ② 3노드 순환에서 모두 1/3 ③ 별 모양(모두가 중심을 인용)에서 중심이 최대 ④ dangling 노드만 있는 그래프에서 균등 ⑤ 빈 그래프에서 패닉 없이 빈 결과. 그래프는 공개 빌더(`CitationGraph::build`)로 만든다 (2026-09-17) |
 | 인용 그래프 | 코퍼스 밖 참조·자기인용·중복 간선 제거 |
 | 개념 필터 | level·score 경계값 (`==` 포함) |
 | gaps | 손으로 만든 코퍼스 10건에서 observed/expected/lift 값을 손계산과 대조, `expected < 3` 쌍 제외, 정렬 순서 |
