@@ -255,6 +255,107 @@ fn backtest_요약과_train_test_편수() {
 }
 
 #[test]
+fn evaluate_는_점수마다_한_행을_낸다() {
+    let dir = corpus_dir("evaluate");
+    let data = dir.to_str().unwrap();
+    let out = netsci(&[
+        "evaluate",
+        "--split-year",
+        "2021",
+        "--format",
+        "csv",
+        "--data",
+        data,
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8(out.stdout).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines[0],
+        "scorer,pairs,positives,base_rate,auroc,auroc_stratified,auroc_null,excess,delta,delta_null,p_value,permutations,k,precision_at_k,gap_precision_at_k"
+    );
+    assert_eq!(lines.len(), 1 + 7, "{text}");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("train 1편(연도 <= 2021) · test 2편"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("co_tagged"), "{stderr}");
+
+    // --label 은 두 기준만 받고, --split-year 는 필수다
+    let out = netsci(&[
+        "evaluate",
+        "--split-year",
+        "2021",
+        "--label",
+        "above-chance",
+        "--data",
+        data,
+    ]);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("above_chance"));
+    assert_eq!(
+        netsci(&[
+            "evaluate",
+            "--split-year",
+            "2021",
+            "--label",
+            "nope",
+            "--data",
+            data
+        ])
+        .status
+        .code(),
+        Some(2)
+    );
+    assert_eq!(netsci(&["evaluate", "--data", data]).status.code(), Some(2));
+
+    // 기준 점수는 --reference 로 고르고, 그 점수의 delta·p 는 빈 칸이다
+    let out = netsci(&[
+        "evaluate",
+        "--split-year",
+        "2021",
+        "--reference",
+        "cooccurrence",
+        "--null-permutations",
+        "5",
+        "--format",
+        "json",
+        "--data",
+        data,
+    ]);
+    assert!(out.status.success());
+    let rows: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let reference = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["scorer"] == "cooccurrence")
+        .unwrap();
+    assert!(reference["delta"].is_null() && reference["p_value"].is_null());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("기준 `cooccurrence`"));
+    assert_eq!(
+        netsci(&[
+            "evaluate",
+            "--split-year",
+            "2021",
+            "--reference",
+            "nope",
+            "--data",
+            data
+        ])
+        .status
+        .code(),
+        Some(2)
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn 잘못된_인자는_종료_코드_2() {
     let out = netsci(&["gaps", "--min-score", "NaN"]);
     assert_eq!(out.status.code(), Some(2));

@@ -7,6 +7,7 @@ use anyhow::Context;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use netsci::concept::{ConceptFilter, Taxonomy, parse_min_score};
 use netsci::corpus::{self, WORKS_FILE, Work};
+use netsci::evaluate::{Positive, Scorer};
 use netsci::fetch::{self, FETCH_SCHEMA, FetchParams};
 use netsci::openalex::HttpClient;
 use netsci::verify::{Alias, parse_alias, same_name};
@@ -52,6 +53,49 @@ enum TaxonomyArg {
     Topics,
     /// 폐기 예정 분류 (verify·evidence 기본, 그래프에서는 비교용)
     Concepts,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum LabelArg {
+    /// test 에서 함께 붙은 논문이 1편 이상 (기준선이 매우 높을 수 있다)
+    CoTagged,
+    /// test 에서 `test_lift >= 1`
+    AboveChance,
+}
+
+/// 짝지은 검정의 기준 점수.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ScorerArg {
+    Lift,
+    Cooccurrence,
+    PreferentialAttachment,
+    CommonNeighbors,
+    AdamicAdar,
+    Jaccard,
+    Random,
+}
+
+impl From<ScorerArg> for Scorer {
+    fn from(value: ScorerArg) -> Self {
+        match value {
+            ScorerArg::Lift => Scorer::Lift,
+            ScorerArg::Cooccurrence => Scorer::Cooccurrence,
+            ScorerArg::PreferentialAttachment => Scorer::PreferentialAttachment,
+            ScorerArg::CommonNeighbors => Scorer::CommonNeighbors,
+            ScorerArg::AdamicAdar => Scorer::AdamicAdar,
+            ScorerArg::Jaccard => Scorer::Jaccard,
+            ScorerArg::Random => Scorer::Random,
+        }
+    }
+}
+
+impl From<LabelArg> for Positive {
+    fn from(value: LabelArg) -> Self {
+        match value {
+            LabelArg::CoTagged => Positive::CoTagged,
+            LabelArg::AboveChance => Positive::AboveChance,
+        }
+    }
 }
 
 /// 분류 그래프를 쓰는 명령의 공통 문턱값 옵션.
@@ -142,6 +186,32 @@ enum Command {
         /// 쌍 목록 대신 후보 집단별 요약을 출력한다
         #[arg(long)]
         summary: bool,
+    },
+    /// 같은 연도 분할을 링크 예측으로 보고, lift 와 다른 점수들의 AUROC·precision 을 비교한다
+    Evaluate {
+        /// 이 연도까지가 train, 다음 연도부터가 test
+        #[arg(long)]
+        split_year: i32,
+        /// precision 을 볼 상위·하위 개수
+        #[arg(long, default_value_t = 20)]
+        top: usize,
+        #[arg(long, default_value_t = 15)]
+        min_works: usize,
+        /// 무엇을 양성으로 볼지
+        #[arg(long, value_enum, default_value_t = LabelArg::CoTagged)]
+        label: LabelArg,
+        /// 주변분포 보존 순열 횟수. AUROC 의 귀무값은 0.5 가 아니므로 기본으로 잰다 (0 이면 끈다).
+        /// 짝지은 p 값의 하한이 1/(N+1) 이라 작은 p 가 필요하면 늘려야 한다
+        #[arg(long, default_value_t = 200)]
+        null_permutations: usize,
+        /// 짝지은 검정에서 다른 점수들과 견줄 기준
+        #[arg(long, value_enum, default_value_t = ScorerArg::Lift)]
+        reference: ScorerArg,
+        /// 사용할 OpenAlex 분류
+        #[arg(long, value_enum, default_value_t = TaxonomyArg::Topics)]
+        taxonomy: TaxonomyArg,
+        #[command(flatten)]
+        filter: FilterArgs,
     },
     /// gaps 상위 쌍을 제목·초록 텍스트 기준 공존과 대조한다
     Verify {
@@ -254,23 +324,61 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let works = load_works(&cli.data)?;
             warn_if_no_labels(&works, taxonomy);
-            let result =
-                backtest::backtest(&works, &filter.to_filter(taxonomy), min_works, split_year);
-            let (train, test) = (result.train.n_works(), result.test.n_works());
-            eprintln!(
-                "train {train}편(연도 <= {split_year}) · test {test}편(연도 > {split_year}) · 연도 없음 {}편 제외",
-                result.undated
-            );
-            if train == 0 || test == 0 {
-                eprintln!(
-                    "경고: train 또는 test 가 비어 있다. --split-year 가 코퍼스 연도 범위 안인지 확인하라"
-                );
-            }
+            let result = split_corpus(&works, &filter.to_filter(taxonomy), min_works, split_year);
             if summary {
                 print_rows(&commands::backtest_summary(&result, top), format)
             } else {
                 print_rows(&commands::backtest(&result, top), format)
             }
+        }
+        Command::Evaluate {
+            split_year,
+            top,
+            min_works,
+            label,
+            null_permutations,
+            reference,
+            taxonomy,
+            filter,
+        } => {
+            let works = load_works(&cli.data)?;
+            warn_if_no_labels(&works, taxonomy);
+            let result = split_corpus(&works, &filter.to_filter(taxonomy), min_works, split_year);
+            let label = Positive::from(label);
+            let candidates = result.pairs.len();
+            let evaluable = result.pairs.iter().filter(|p| p.evaluable()).count();
+            eprintln!(
+                "양성 기준 `{}` · 후보 {candidates}쌍 중 판정 가능(test_expected >= 3) {evaluable}쌍만 평가한다",
+                label.as_str()
+            );
+            if candidates > 0 && evaluable * 2 < candidates {
+                eprintln!(
+                    "경고: 후보의 절반 넘게 빠졌다. 이 필터는 점수마다 다르게 작용하므로(lift 쪽에 유리) 분할 연도를 뒤로 밀수록 결과를 더 흔든다"
+                );
+            }
+            if null_permutations == 0 {
+                eprintln!(
+                    "경고: 순열 귀무기준을 끄면 `auroc` 를 0.5 와 견주게 되는데 이 설계의 귀무값은 0.5 가 아니고, `delta` 의 부호만으로는 점수의 우열을 말할 수 없다. 우열 판단에는 `p_value` 가 필요하다"
+                );
+            }
+            let reference = Scorer::from(reference);
+            let rows = commands::evaluate(&result, label, top, null_permutations, reference);
+            if let Some(row) = rows.first()
+                && null_permutations > 0
+            {
+                eprintln!(
+                    "짝지은 검정 기준 `{}` · 순열 {} 회 요청, {} 회 사용",
+                    reference.as_str(),
+                    null_permutations,
+                    row.permutations
+                );
+                if row.permutations < null_permutations {
+                    eprintln!(
+                        "경고: 양성이나 음성이 0 이 된 순열이 빠졌다. 남은 순열은 레이블 균형이 덜 치우친 것만이라 귀무 분산이 과소평가된다"
+                    );
+                }
+            }
+            print_rows(&rows, format)
         }
         Command::Verify {
             top,
@@ -322,6 +430,27 @@ async fn main() -> anyhow::Result<()> {
             )
         }
     }
+}
+
+/// 연도로 코퍼스를 나누고(§5.7) train·test 편수를 stderr 에 알린다. `backtest`·`evaluate` 가 함께 쓴다.
+fn split_corpus(
+    works: &[Work],
+    filter: &ConceptFilter,
+    min_works: usize,
+    split_year: i32,
+) -> backtest::Backtest {
+    let result = backtest::backtest(works, filter, min_works, split_year);
+    let (train, test) = (result.train.n_works(), result.test.n_works());
+    eprintln!(
+        "train {train}편(연도 <= {split_year}) · test {test}편(연도 > {split_year}) · 연도 없음 {}편 제외",
+        result.undated
+    );
+    if train == 0 || test == 0 {
+        eprintln!(
+            "경고: train 또는 test 가 비어 있다. --split-year 가 코퍼스 연도 범위 안인지 확인하라"
+        );
+    }
+    result
 }
 
 /// 토픽 수집 전 코퍼스에 topics 를 쓰면 결과가 조용히 비므로 알린다.

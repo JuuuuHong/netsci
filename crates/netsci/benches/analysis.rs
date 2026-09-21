@@ -10,9 +10,11 @@ use std::hint::black_box;
 use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
+use netsci::backtest::backtest;
 use netsci::citation::{CitationGraph, pagerank};
 use netsci::concept::{ConceptFilter, ConceptGraph};
 use netsci::corpus::{Concept, Topic, Work};
+use netsci::evaluate::{Positive, Scorer, evaluate};
 use netsci::gaps::find_gaps;
 use netsci::verify::verify_gaps;
 
@@ -155,6 +157,18 @@ fn benches(c: &mut Criterion) {
     let mut group = c.benchmark_group("verify");
     group.bench_function("concepts_top20", |b| {
         b.iter(|| verify_gaps(black_box(&works), &concepts, MIN_WORKS, 20, &[]))
+    });
+    group.finish();
+
+    // 합성 코퍼스의 연도는 2018~2024 이므로 가운데(2021)에서 나눈다
+    let split = backtest(&works, &concepts, MIN_WORKS, 2021);
+    let mut group = c.benchmark_group("evaluate");
+    group.bench_function("concepts_top20", |b| {
+        b.iter(|| evaluate(black_box(&split), Positive::CoTagged, 20, 0, Scorer::Lift))
+    });
+    // 순열은 (작품, 레이블) 사건 수 × 20 회를 맞바꾸고 동시출현을 다시 세므로 비용이 여기에 몰린다
+    group.bench_function("concepts_top20_null20", |b| {
+        b.iter(|| evaluate(black_box(&split), Positive::CoTagged, 20, 20, Scorer::Lift))
     });
     group.finish();
 

@@ -5,6 +5,7 @@ pub mod citation;
 pub mod commands;
 pub mod concept;
 pub mod corpus;
+pub mod evaluate;
 pub mod fetch;
 pub mod gaps;
 pub mod openalex;
