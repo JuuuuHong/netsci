@@ -45,7 +45,7 @@ baselines (raw co-occurrence, preferential attachment) and a deterministic rando
 precision@k at both ends of the ranking. Crucially, 0.5 is **not** the null
 AUROC for this design: candidate pairs are conditioned on both labels being frequent, and both the scores and the
 positive labels correlate with marginal frequency, so a marginal-preserving permutation null lands anywhere from
-0.37 to 0.93. `evaluate` therefore measures that null by default and reports `excess = auroc − auroc_null`.
+0.41 to 0.81 on runs that used all 200 permutations (wider on small runs). `evaluate` therefore measures that null by default and reports `excess = auroc − auroc_null`.
 Even that excess is not enough to rank two scorers, because it
 subtracts a *separately* estimated null from each: ordering scorers by excess sign turns out to count noise
 (`random` outscores `lift` on excess in one run). `evaluate` therefore collects all seven AUROCs per permutation in
@@ -83,7 +83,7 @@ including the split years, run lists and scoring rules — **written down before
   concepts 공백 후보 상위 20쌍이 test 에서 함께 태깅된 비율은 61.1%(판정 가능 18쌍 중 11쌍)로 전체 후보 94.2% 보다 낮고, train lift 구간이 높을수록 test lift 중앙값이 커집니다(0.181 → 2.616).
   판정 가능한 쌍이 있는 분할 실행 7개가 모두 같은 방향입니다.
 - **점수끼리의 우열은 짝지은 순열 검정으로만 말할 수 있고, 그렇게 재면 주장이 크게 줄어듭니다.**
-  이 설계에서 AUROC 의 귀무값은 0.5 가 아니라 0.37~0.93 이고(후보가 "양쪽 다 흔한 쌍" 으로 조건화돼 있어서),
+  이 설계에서 AUROC 의 귀무값은 0.5 가 아니라 0.41~0.81 이고(순열 200회를 모두 쓴 실행 기준. 후보가 "양쪽 다 흔한 쌍" 으로 조건화돼 있어서),
   귀무를 뺀 `excess` 조차 두 점수의 *차이* 에 대한 불확실성을 담지 않습니다. 같은 순열에서 차이를 모아 p 를 내면,
   `above_chance` 기준에서 lift 는 `random` 8/8 · `preferential_attachment` 7/8 · 이웃 기반 점수 6/8 을 이기지만
   **정규화하지 않은 공존 수와는 8회 중 3회만 구분됩니다.** `co_tagged` 기준에서는 `random` 상대로도 1/8 뿐이라
@@ -833,8 +833,8 @@ netsci gaps --taxonomy concepts --top 100000 --format csv --data data/li-anode-p
 - **lift 의 변별력은 상당 부분 "train 공존이 0인가" 라는 이진 구분입니다.** 평가 쌍의 절반 가까이가 `lift = 0` 단일 동점 블록이라
   그 안에서는 순서를 전혀 주지 못합니다. 정규화의 값어치를 과대평가하지 않으려면 이 점을 함께 읽어야 합니다.
 - **`excess` 부호로 점수를 줄 세우면 잡음을 셉니다.** `excess` 는 점수마다 따로 잰 귀무를 빼므로 두 점수의 *차이* 에 대한
-  불확실성이 없습니다. 실제로 `li-anode-phrase-all · topics · co_tagged` 에서는 `random` 의 `excess`(+0.420)가
-  `lift`(+0.148)보다 큽니다. 그래서 우열은 같은 순열에서 잰 `delta` 의 p 값으로만 판단하고, `excess` 는 크기를 읽는 데만 씁니다.
+  불확실성이 없습니다. 실제로 `li-anode-phrase · topics · co_tagged` 에서는 `random` 의 `excess`(+0.262)가
+  `lift`(+0.242)보다 큽니다(쓸 수 있는 순열 88회). 그래서 우열은 같은 순열에서 잰 `delta` 의 p 값으로만 판단하고, `excess` 는 크기를 읽는 데만 씁니다.
   관측 AUROC 자체의 오차(개념 단위 부트스트랩)는 여전히 재지 않았습니다 — 쌍이 서로 독립이 아니라(개념 하나가 수백 쌍에 참여)
   소박한 이항 구간은 너무 좁습니다.
 - **판정 가능 필터(`test_expected >= 3`)가 점수마다 다르게 작용합니다.** 걷어내는 양이 큽니다 —
