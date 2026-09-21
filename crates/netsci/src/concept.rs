@@ -108,6 +108,7 @@ impl ConceptFilter {
 /// 필드를 숨기고 [`ConceptGraph::build`] 로만 만든다. 그래서 다음 불변식이 항상 성립한다.
 /// - `ids`·`names`·`levels`·`works` 의 길이가 개념 수와 같고 `index` 는 `ids` 의 역방향이다
 /// - `cooccurrence` 의 키 `(a, b)` 는 `a < b` 이고 둘 다 범위 안의 개념 번호다
+/// - `documents` 의 길이는 `n_works` 와 같고, 각 원소는 오름차순·중복 없는 개념 번호다
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ConceptGraph {
     /// 코퍼스 작품 수 (개념이 하나도 없는 작품 포함)
@@ -124,6 +125,9 @@ pub struct ConceptGraph {
     works: Vec<u32>,
     /// `(a, b)` (a < b) → 두 개념을 함께 가진 논문 수
     cooccurrence: HashMap<(u32, u32), u32>,
+    /// 작품마다 필터를 통과한 개념 번호 (오름차순). 개념이 없는 작품은 빈 목록이다.
+    /// 순열 귀무기준(§5.9)이 이 목록을 섞어 그래프를 다시 세우므로 보존한다
+    documents: Vec<Vec<u32>>,
 }
 
 impl ConceptGraph {
@@ -149,8 +153,16 @@ impl ConceptGraph {
                     *graph.cooccurrence.entry((a, b)).or_insert(0) += 1;
                 }
             }
+            graph.documents.push(nodes);
         }
         graph
+    }
+
+    /// 작품마다 필터를 통과한 개념 번호 (오름차순, 중복 없음). 길이는 [`Self::n_works`] 와 같다.
+    ///
+    /// 순열 귀무기준이 이 목록의 (작품, 개념) 사건을 맞바꿔 연관만 파괴한 그래프를 만든다.
+    pub fn documents(&self) -> &[Vec<u32>] {
+        &self.documents
     }
 
     fn intern(&mut self, label: Label<'_>) -> u32 {
@@ -204,6 +216,22 @@ impl ConceptGraph {
     pub fn observed(&self, a: u32, b: u32) -> u32 {
         let key = if a < b { (a, b) } else { (b, a) };
         self.cooccurrence.get(&key).copied().unwrap_or(0)
+    }
+
+    /// 개념 번호 → 함께 등장한 적이 있는 개념 번호들 (오름차순, 자기 자신은 없다).
+    ///
+    /// `cooccurrence` 는 해시맵이라 순회 순서가 실행마다 다르므로 정렬해서 결정적으로 만든다.
+    /// 간선 키는 `a < b` 라 각 간선이 양쪽에 한 번씩만 들어가고, 중복도 생기지 않는다.
+    pub fn neighbors(&self) -> Vec<Vec<u32>> {
+        let mut adjacency = vec![Vec::new(); self.concept_count()];
+        for &(a, b) in self.cooccurrence.keys() {
+            adjacency[a as usize].push(b);
+            adjacency[b as usize].push(a);
+        }
+        for list in &mut adjacency {
+            list.sort_unstable();
+        }
+        adjacency
     }
 
     /// 개념별 가중 연결강도 (붙은 간선 가중치 합).

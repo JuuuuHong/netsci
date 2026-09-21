@@ -123,3 +123,78 @@ fn 토픽_없는_옛_jsonl_도_읽힌다() {
     .unwrap();
     assert!(old.topics.is_empty());
 }
+
+/// `neighbors()` 의 불변식(오름차순·중복 없음·자기 자신 제외)을 직접 검증한다.
+/// 이 불변식이 깨지면 `evaluate` 의 공통 이웃 계산(합쳐 훑기)이 조용히 틀린 값을 낸다.
+#[test]
+fn 이웃_목록은_오름차순이고_자기_자신을_넣지_않는다() {
+    use netsci::concept::{ConceptFilter, ConceptGraph};
+    use netsci::corpus::{Concept, Work};
+
+    // 개념 이름을 일부러 등장 순서와 반대로 두어, 정렬이 빠지면 번호가 뒤섞이게 만든다
+    let work = |id: usize, names: &[&str]| Work {
+        id: format!("W{id}"),
+        title: None,
+        year: Some(2020),
+        cited_by_count: 0,
+        referenced_works: vec![],
+        concepts: names
+            .iter()
+            .map(|n| Concept {
+                id: format!("C-{n}"),
+                name: n.to_string(),
+                level: 2,
+                score: 0.9,
+            })
+            .collect(),
+        topics: vec![],
+        abstract_text: None,
+    };
+    let works = vec![
+        work(1, &["E", "C", "A"]),
+        work(2, &["D", "B"]),
+        work(3, &["A", "B", "E"]),
+        work(4, &["C"]),
+    ];
+    let graph = ConceptGraph::build(&works, &ConceptFilter::concepts());
+    let adjacency = graph.neighbors();
+    assert_eq!(adjacency.len(), graph.concept_count());
+
+    let name = |c: u32| graph.names()[c as usize].as_str();
+    for (concept, list) in adjacency.iter().enumerate() {
+        assert!(
+            list.windows(2).all(|w| w[0] < w[1]),
+            "{} 의 이웃이 오름차순·중복 없음이 아니다: {list:?}",
+            name(concept as u32)
+        );
+        assert!(
+            !list.contains(&(concept as u32)),
+            "{} 의 이웃에 자기 자신이 있다",
+            name(concept as u32)
+        );
+        // 이웃 목록과 `observed` 가 서로 맞아야 한다
+        for other in 0..graph.concept_count() as u32 {
+            let linked = graph.observed(concept as u32, other) > 0 && other != concept as u32;
+            assert_eq!(
+                list.contains(&other),
+                linked,
+                "{} – {} 의 이웃 여부가 observed 와 다르다",
+                name(concept as u32),
+                name(other)
+            );
+        }
+    }
+
+    // 실제 이웃 관계도 이름으로 확인한다 (W1: A·C·E, W2: B·D, W3: A·B·E, W4: C)
+    let neighbors_of = |target: &str| {
+        let c = (0..graph.concept_count() as u32)
+            .find(|&c| name(c) == target)
+            .unwrap();
+        let mut got: Vec<&str> = adjacency[c as usize].iter().map(|&n| name(n)).collect();
+        got.sort_unstable();
+        got
+    };
+    assert_eq!(neighbors_of("A"), ["B", "C", "E"]);
+    assert_eq!(neighbors_of("D"), ["B"]);
+    assert_eq!(neighbors_of("C"), ["A", "E"]);
+}
