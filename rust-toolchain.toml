@@ -1,3 +1,6 @@
 [toolchain]
-channel = "stable"
+# 정확한 판으로 고정한다. `netsci-report-derive` 의 trybuild UI 테스트가 커밋된 `.stderr` 와
+# 컴파일러 진단 문구를 정확 일치로 비교하므로, 부동 `stable` 이면 rustc 가 오를 때마다
+# 변경과 무관하게 CI 가 깨진다. 판을 올릴 때는 `TRYBUILD=overwrite cargo test -p netsci-report-derive` 로 스냅샷을 갱신한다.
+channel = "1.98.1"
 components = ["rustfmt", "clippy"]
