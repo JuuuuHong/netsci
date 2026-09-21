@@ -223,6 +223,21 @@ netsci fetch --query '"lithium metal anode"' \
 
 > 추가 이유(2026-09-17): 과거 시점의 공백 후보가 이후 논문에서 함께 태깅됐는지를 누수 없이 세어, 낮은 lift 가 시간이 지나도 유지되는 신호인지 확인한다.
 
+### 4.9 `netsci evaluate --split-year Y [--top 20] [--min-works 15] [--label co-tagged] [--null-permutations 200] [--reference lift] [--taxonomy topics] [--min-level 2] [--min-score 0.4]`
+예측력 평가 (§5.8). §5.7 과 같은 분할을 링크 예측으로 보고 점수 7개를 나란히 잰다.
+stderr 에 train·test 편수(§4.8 과 같은 줄)와 양성 기준을 알린다.
+- 행: 점수마다 하나씩 `lift`, `cooccurrence`, `preferential_attachment`, `common_neighbors`, `adamic_adar`, `jaccard`, `random` 순
+- 열: `scorer`, `pairs`, `positives`, `base_rate`(3), `auroc`(3), `auroc_stratified`(3), `auroc_null`(3), `excess`(3), `delta`(3), `delta_null`(3), `p_value`(3), `permutations`, `k`, `precision_at_k`(3), `gap_precision_at_k`(3)
+- `--reference <scorer>`(기본 `lift`) = 짝지은 검정에서 다른 점수들과 견줄 기준 (§5.10). 기준 자신의 `delta`·`p_value` 는 빈 칸
+- `--label co-tagged`(기본) = test 공존 1편 이상, `--label above-chance` = `test_lift >= 1`
+- `--null-permutations N`(기본 200) = 주변분포 보존 순열 횟수 (§5.9). 짝지은 p 의 하한이 `1/(N+1)` 이라 200 으로 둔다. 0 이면 귀무 열이 비고 stderr 로 경고한다
+- 정의되지 않는 값(양성이나 음성이 없음, 쌍이 없음, 쓸 수 있는 순열이 없음)은 빈 칸
+- **점수끼리의 우열은 `p_value` 로 판단한다** (§5.10). `auroc` 는 귀무값이 0.5 가 아니라 그대로 견줄 수 없고(§5.9), `excess` 는 차이의 불확실성을 담지 않는다
+
+> 추가 이유(2026-09-21): `backtest` 는 공백 후보가 이후에도 공백으로 남는지까지만 보여 주고,
+> "다른 점수와 비교했을 때 lift 가 더 잘 고르는가" 는 열어 두었다. 같은 분할을 링크 예측 문제로 놓으면
+> lift 를 이웃 기반 점수·빈도 점수·무작위와 같은 자(AUROC·precision@k)에 올릴 수 있다.
+
 ---
 
 ## 5. 알고리즘
@@ -290,6 +305,55 @@ PR_new[v] = (1 - d)/N  +  d * ( Σ_{u→v} PR[u]/outdeg(u)  +  dangling_sum/N )
 - train lift 구간(정수 비교): `observed = 0` / `2·observed·N < works_a·works_b` / `observed·N < works_a·works_b` / `observed·N < 2·works_a·works_b` / 그 밖
 - 요약의 `median_test_lift` 는 판정 가능 쌍, `median_test_expected` 는 모든 쌍의 중앙값(짝수 개면 가운데 두 값 평균)
 - test 공존은 "나중에 함께 태깅됐다" 일 뿐 가설 검증이 아니다. 흔한 레이블끼리는 test 기대값이 커서 공존이 쉽게 생기므로 기준선(`all_candidates`)·판정 가능 비율과 함께 읽는다
+
+### 5.8 예측력 평가 (`evaluate`)
+- §5.7 의 train·test 분할과 후보 쌍을 그대로 쓴다. **판정 가능 쌍(`test_expected >= 3`)만** 평가한다 — 한쪽 레이블이 test 에 없는 쌍을 넣으면 "이후에도 함께 안 나왔다" 가 레이블 소멸 때문인지 관계가 없어서인지 구분되지 않는다
+- 양성: `co-tagged` = `test_observed >= 1`, `above-chance` = `test_lift >= 1`
+- 점수는 모두 **train 그래프만** 보고 매기고, 값이 클수록 이후 공존을 예측하는 방향으로 맞춘다
+  - `lift` = `observed / expected` (§5.4). `cooccurrence` = `observed`. `preferential_attachment` = `works_a × works_b`
+  - 이웃 `N(x)` = 함께 등장한 적 있는 개념. **합집합에서만** 쌍 자신(a, b)을 뺀다 — a–b 가 이어져 있으면 `b ∈ N(a)` 가 되기 때문이다.
+    공통 이웃 쪽은 뺄 것이 없다: 간선 키가 `a < b` 라 자기 간선이 없어 `a ∉ N(a)` 이고, 따라서 `z ∈ N(a) ∩ N(b)` 인 z 는 언제나 `z != a, b` 다
+  - `common_neighbors` = `|N(a) ∩ N(b)|`, `adamic_adar` = `Σ 1 / ln(deg z)` (공통 이웃 z 는 a·b 양쪽과 이어져 `deg z >= 2` 이므로 0 으로 나누는 경우가 없다), `jaccard` = `|N(a) ∩ N(b)| / |N(a) ∪ N(b)|`(합집합이 0 이면 0)
+  - `random` = 개념 **id 두 개**의 FNV-1a 해시로 정하는 [0, 1) 값. 해시맵 순회 순서·개념 번호에 좌우되지 않아 코퍼스를 읽는 순서가 달라도 같다
+- `auroc` = 양성의 오름차순 midrank 합으로 계산(Mann–Whitney U). 동점은 양쪽에 0.5 로 나눠 준다 — `lift = 0` 같은 큰 동점 집단이 흔해 동점 처리가 결과를 좌우한다. 양성 또는 음성이 없으면 없음
+- `precision_at_k` = 점수 상위 k 개의 양성 비율. 동점 집단이 k 경계에 걸리면 **기대 개수**(집단의 양성 비율 × 걸친 자리 수)로 센다. 무작위 동점 처리의 기댓값과 같고 후보 나열 순서에 좌우되지 않는다
+- `gap_precision_at_k` = 점수와 레이블을 함께 뒤집어 같은 식으로 잰 값 — 점수 **하위** k 개의 음성 비율. 공백 후보 쪽 정확도다
+- **AUROC 는 전역 평균이라 특정 꼬리(공백 후보 쪽)를 주장하는 데 쓸 수 없다.** 그 역할은 `gap_precision_at_k` 다
+- **양성 기준이 점수를 편든다**: `above-chance` 는 train 의 lift 를 test 기간에 그대로 적용한 기준이고, `co-tagged` 는 독립 가정 아래 최적 예측자가 `works_a × works_b`(= `preferential_attachment`)인 기준이다. 두 기준을 모두 보고하고 한쪽 수치만으로 결론을 세우지 않는다
+- `lift` 의 변별력은 상당 부분 "train 공존이 0인가" 라는 이진 구분에서 온다. 평가 쌍의 절반 가까이가 `lift = 0` 단일 동점 블록이라 그 안에서는 순서를 주지 못한다
+- 이것도 "가설이 맞았다" 를 재지 않는다. 재는 것은 두 레이블이 이후 논문에 함께 붙었는지뿐이다
+
+---
+
+### 5.9 순열 귀무기준 (`evaluate --null-permutations`)
+- **AUROC 0.5 는 이 설계의 귀무값이 아니다.** 평가 대상이 무작위 쌍이 아니라 `min_works`·`expected >= 3` 으로 걸러진 "양쪽 다 흔한 레이블 쌍" 이고, 레이블 정의(`observed >= 1`)와 점수가 둘 다 주변빈도와 상관되므로, 연관이 전혀 없어도 AUROC 가 0.5 에서 크게 벗어난다 (실측 0.37~0.93)
+- 귀무분포는 **test (작품, 레이블) 이분그래프의 설정모형 순열**로 만든다. train 은 건드리지 않으므로 점수는 순열에 불변이고 레이블만 바뀐다. 점수는 한 번만 매겨 모든 순열이 나눠 쓴다
+- 맞바꿈: (작품, 레이블) 사건 둘을 골라 레이블을 교환한다. 같은 작품·같은 레이블·한 작품에 같은 레이블이 두 번 붙는 교환은 취소한다. 그래서 **레이블별 작품 수와 작품별 레이블 수가 정확히 보존**되고, `test_expected` 도 불변이라 판정 가능 쌍 집합이 순열마다 달라지지 않는다
+- 섞는 양은 (작품, 레이블) 사건 수 × 20 회. 난수는 고정 씨앗 xorshift64\*
+- **결정성**: 개념 번호는 처음 등장한 순서, 문서 목록은 파일 순서라 둘 다 코퍼스를 읽는 순서에 좌우된다. 섞기 전에 개념 번호를 id 오름차순 순위로 바꾸고 문서 목록도 그 번호 목록 순으로 정렬해 정규화한다. 그래야 같은 코퍼스를 다른 순서로 읽어도 결과가 같다
+- `auroc_null` = 순열 AUROC 의 평균, 표준편차는 표본표준편차. 양성이나 음성이 0 이 된 순열은 AUROC 가 정의되지 않아 빼고, 실제로 쓴 횟수를 `permutations` 로 낸다
+- `excess` = `auroc - auroc_null`, `z` = `excess / 귀무 표준편차`. 순열이 2회 미만이거나 표준편차가 0 이면 `z` 는 없다
+- `excess` 는 AUROC 척도로 크기를 읽는 데 쓴다. `random` 만이 원래부터 0.5 를 귀무값으로 갖는 점수이고(주변빈도와 독립적으로 만들었다), 그 사실이 나머지 점수의 0.5 기준선을 정당화하지 않는다
+
+---
+
+### 5.10 짝지은 순열 검정 (`evaluate --reference`)
+- **점수끼리의 우열은 두 점수의 *차이* 에 대한 주장이므로, 점수마다 따로 잰 귀무(`excess`)로는 판단할 수 없다.** 작은 실행에서는 `random` 의 `excess` 조차 ±0.2 까지 흔들려 `lift` 를 넘는다
+- §5.9 의 순열을 그대로 쓴다. 순열마다 점수 7개의 AUROC 를 **한 행으로** 모으고, 기준 점수와의 차이 `delta = auroc(기준) − auroc(X)` 를 같은 행에서 잰다
+- 한 순열에서 AUROC 가 정의되는지는 레이블에만 달려 있어 7개가 동시에 정의되거나 동시에 정의되지 않는다. 그래서 행 단위 수집이 짝짓기를 구조적으로 보장한다
+- `p_value` = 양측 경험적 p `(1 + #{|d − 평균| >= |관측 − 평균|}) / (n + 1)`. **하한이 `1/(n+1)`** 이므로 작은 p 가 필요하면 `--null-permutations` 를 올려야 한다
+- 기준 점수 자신은 `delta`·`delta_null`·`p_value` 가 없다. 기준을 바꾸면 `delta` 의 부호가 뒤집히고 `p_value` 는 같다(양측이므로)
+- **생존 편향**: 양성이나 음성이 0 이 된 순열은 빠지는데, 남은 순열은 레이블 균형이 덜 치우친 것만이라 귀무 분산이 과소평가되고 p 가 실제보다 작아진다. `permutations < requested_permutations` 면 경고한다
+- p 값에 **다중비교 보정을 하지 않는다**. 기준 하나 대 6개 비교를 한 번에 읽을 때는 Bonferroni(0.05/6 = 0.0083)를 함께 보고한다
+
+---
+
+### 5.11 계층화 AUROC (`auroc_stratified`)
+- 두 양성 기준이 모두 주변빈도와 상관되므로, 전체에서 한 번 잰 AUROC 에는 "그 쌍이 얼마나 흔한가" 라는 교란이 섞인다
+- `test_expected` 의 순위로 쌍을 같은 개수씩 10계층으로 나누고, 계층 안에서 잰 AUROC 를 쌍 수로 가중평균한다. 양성이나 음성이 없어 AUROC 가 정의되지 않는 계층은 뺀다
+- 쌍이 계층 수보다 적으면 어느 계층에도 양성·음성이 함께 있지 않아 값이 없다. 계층을 억지로 합치지 않는다 — 합치는 규칙이 결과를 좌우하는데 그 규칙을 정당화할 근거가 없다
+- **진단용이다.** 순열 귀무기준(§5.9)과 짝지은 검정(§5.10)은 계층화하지 않은 AUROC 로 하며, 계층화 값으로 점수의 우열을 세우지 않는다
+- 실측: 읽은 16회에서 `preferential_attachment` 가 평균 −0.112(최대 −0.285) 내려가고 `lift` 는 −0.003 으로 거의 움직이지 않는다. 빈도 점수의 겉보기 실력이 대부분 주변크기 교란이었다는 뜻이다
 
 ---
 
@@ -445,11 +509,13 @@ pub trait PrecisionCell { fn cell_with_precision(&self, precision: usize) -> Str
 2. 파이프라인 그림 (fetch → works.jsonl → citation / concept graph → gaps)
 3. 빠른 시작 (cargo, docker)
 4. **실제 실행 결과** — 두 분야(자연과학: `"lithium metal anode"`, 소프트웨어: `"retrieval-augmented generation"`, 둘 다 2018~2024, 피인용 20회 초과) 로 `stats`, `citations`, `gaps` 등의 출력을 붙인다. 숫자는 실제 실행값만 (초안의 한 분야에서 2026-09-17 변경)
-5. 설계 결정 요약 (`docs/decisions.md` 링크)
-6. **한계** — 최소한 다음을 쓴다
+5. **예측력 평가** — 생물 분야(`"base editing"`, 2018~2024, 인용 필터 없음)를 더해 `evaluate` 결과를 붙인다. 사전 등록한 실행을 모두 싣고, 기준(`co-tagged`·`above-chance`) 양쪽을 함께 싣는다 (2026-09-21 추가)
+6. 설계 결정 요약 (`docs/decisions.md` 링크)
+7. **한계** — 최소한 다음을 쓴다
    - 코퍼스 내부 인용만 그래프에 들어가 성기다 (`stats` 의 내부 비율 수치 인용)
    - OpenAlex concepts 오분류 (`Lithium (medication)` 실례)
    - `lift` 가 낮다고 연구 가치가 있다는 뜻은 아니다 — 단지 후보일 뿐
+   - `evaluate` 의 높은 AUROC 는 점수가 재현된다는 뜻이지 레이블이 옳다는 뜻이 아니다. 양성 기준에 따라 결론이 뒤집히므로 두 기준을 함께 싣는다
    - 개념 표기 정규화 없음, 표 출력의 한글 폭 미고려
 
 ---
@@ -457,7 +523,7 @@ pub trait PrecisionCell { fn cell_with_precision(&self, precision: usize) -> Str
 ## 11. 완료 정의
 
 - [x] §9 의 8단계 커밋이 모두 존재
-- [ ] `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` 통과
+- [x] `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` 통과 (CI 에서도 돈다 — `.github/workflows/ci.yml`)
 - [x] 라이브러리 코드에 `unwrap`/`expect`/`todo!`/`unimplemented!` 없음
 - [ ] `docker build` 성공, 컨테이너로 `fetch` → `gaps` 가 실제로 동작
 - [ ] README 의 실행 결과가 실제 출력과 일치
