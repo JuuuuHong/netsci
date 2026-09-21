@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 이 워크플로는 저장소를 읽기만 한다
+permissions:
+  contents: read
+
+# 같은 브랜치에 연속으로 밀면 앞 실행을 취소한다
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt · clippy · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 인자 없이 부르면 `rust-toolchain.toml` 의 판과 컴포넌트를 그대로 설치한다.
+      # (`rustup show` 는 판에 따라 자동 설치 여부가 달라져 쓰지 않는다)
+      - name: 툴체인 설치
+        run: rustup toolchain install
+
+      # 툴체인 설치 뒤에 둔다 — 캐시 키에 rustc 판이 들어가야 한다
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 포맷 검사
+        run: cargo fmt --check
+
+      - name: clippy (경고를 에러로)
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      # 테스트는 네트워크에 접근하지 않는다 (HTTP 클라이언트를 트레이트로 추상화해 가짜 구현을 주입).
+      # `--locked` 는 Dockerfile 과 기준을 맞춰 `Cargo.lock` 드리프트를 PR 에서 잡는다
+      - name: 테스트
+        run: cargo test --locked
+
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 이미지 빌드
+        run: docker build -t netsci .
+      - name: 도움말이 뜨는지 확인
+        run: docker run --rm netsci --help
