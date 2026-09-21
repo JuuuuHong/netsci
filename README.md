@@ -1,5 +1,7 @@
 # netsci
 
+[![CI](https://github.com/JuuuuHong/netsci/actions/workflows/ci.yml/badge.svg)](https://github.com/JuuuuHong/netsci/actions/workflows/ci.yml)
+
 > 과학 문헌에서 기대보다 함께 등장하지 않는 개념 조합을 네트워크 구조로 찾고, 그 결과가 진짜인지 원자료로 확인한다.
 
 [OpenAlex](https://openalex.org) 논문 메타데이터로 **인용 네트워크**와 **개념 동시출현 네트워크**를 만들고,
@@ -10,15 +12,65 @@
 ABC 모델은 A–B 와 B–C 는 각각 다뤄졌는데 A–C 는 함께 다뤄지지 않은 조합에서, 매개 개념 B 를 거쳐 A–C 관계의 가설을 세웁니다.
 이 도구는 그중 **A–C 가 기대보다 함께 나오지 않는 후보**를 찾고, `gaps --bridges` 로 A·C 양쪽에 기대보다 자주 함께 붙는 매개 개념 B 후보를 붙입니다(동시출현 통계일 뿐 기전은 아닙니다).
 `backtest` 는 과거 연도 논문으로 뽑은 후보가 이후 논문에서 함께 태깅됐는지 셉니다.
+`evaluate` 는 같은 분할을 링크 예측 문제로 놓고, lift 가 다른 점수들보다 잘 맞히는지 AUROC 로 비교합니다.
 
 - tokio 기반 순차 수집 (레이트리밋·재시도·페이지 단위 디스크 캐시, 끊겨도 이어받기, 일일 과금 한도 감시)
 - PageRank 직접 구현, 동시출현 기대값 대비 lift 로 공백 후보 점수화, 제목·초록 텍스트로 후보 검증, 연도 분할 검증
 - 출력 행 타입에 `#[derive(Report)]` 프로시저 매크로를 붙여 표·JSON·CSV 를 한 번에 지원
 - 멀티스테이지 Docker 이미지 (비루트 실행)
+- `evaluate` 로 lift 를 이웃 기반 점수·무작위와 같은 자(AUROC·precision@k)에 올려 비교
+
+## Summary (English)
+
+A Rust CLI that builds **citation** and **concept co-occurrence** networks from [OpenAlex](https://openalex.org)
+metadata and surfaces concept pairs that are individually frequent but **co-occur less than chance** — the A–C
+candidates of Swanson's ABC model of literature-based discovery.
+
+It does **not** claim such a pair is an unexplored research opportunity. Every headline result below is a
+measurement of how far the signal is from that claim:
+
+- The top "gaps" in a lithium corpus are an artifact of how OpenAlex assigns topics (3 slots per paper,
+  near-duplicate battery topics filling them), not research gaps.
+- Tag-level co-occurrence of zero overstates the signal, but is not baseless: tag lift and title/abstract
+  `text_lift` correlate at ρ = 0.64, and zero-co-occurrence pairs also co-occur less than chance in text.
+- The independence assumption behind `expected` is violated: a Poisson approximation predicts ~29.5
+  zero-co-occurrence pairs among 3,886 lithium candidates; 321 are observed. `lift` is therefore used only as a
+  ranking, never as a test statistic.
+- Splitting a corpus by year shows gap candidates mostly **stay** gaps, and gives no evidence that they are the
+  pairs that later get filled.
+
+`evaluate` puts that last point on a standard footing: it treats the same temporal split as a link-prediction
+problem and scores `lift` against neighbourhood baselines (common neighbours, Adamic–Adar, Jaccard), frequency
+baselines (raw co-occurrence, preferential attachment) and a deterministic random floor, reporting AUROC and
+precision@k at both ends of the ranking. Crucially, 0.5 is **not** the null
+AUROC for this design: candidate pairs are conditioned on both labels being frequent, and both the scores and the
+positive labels correlate with marginal frequency, so a marginal-preserving permutation null lands anywhere from
+0.37 to 0.93. `evaluate` therefore measures that null by default and reports `excess = auroc − auroc_null`.
+Even that excess is not enough to rank two scorers, because it
+subtracts a *separately* estimated null from each: ordering scorers by excess sign turns out to count noise
+(`random` outscores `lift` on excess in one run). `evaluate` therefore collects all seven AUROCs per permutation in
+one row and reports a paired permutation test of `delta = auroc(reference) − auroc(other)`.
+
+Read that way, the claim that survives is narrow: under the "above chance" label `lift` beats `random` 8/8,
+preferential attachment 7/8 and the neighbourhood baselines 6/8 at p < 0.05 — **but is indistinguishable from the
+unnormalised co-occurrence count in 5 of 8 runs.** Under the "co-tagged at least once" label nothing separates at
+all, including `lift` against `random` (1/8), which says the label has no discriminative power at these base rates
+(0.59–0.96) rather than anything about `lift`. Two earlier drafts of this README claimed the opposite and then an
+overstated win; what changed and why is recorded in order in [`docs/decisions.md`](docs/decisions.md). Results are
+in [예측력 평가](#예측력-평가--evaluate) below.
+
+Engineering notes: three-crate workspace; a `#[derive(Report)]` procedural macro that renders any row type as a
+table, JSON or CSV; the HTTP client is a trait, so **no test touches the network**; deterministic output
+throughout (integer cross-products instead of float comparisons for `lift` ties); resumable page cache with
+rate-limit, retry and daily-budget handling; multi-stage non-root Docker image. `cargo fmt --check`,
+`cargo clippy -- -D warnings` and `cargo test` run in CI.
+
+Every design choice not fixed by [`SPEC.md`](SPEC.md) is recorded in [`docs/decisions.md`](docs/decisions.md),
+including the split years, run lists and scoring rules — **written down before the results were looked at**.
 
 ## 핵심 결과
 
-아래 "실제 실행 결과" 에서 두 분야 코퍼스로 확인한 내용입니다.
+아래 "실제 실행 결과" 에서 세 분야 코퍼스로 확인한 내용입니다.
 
 - **리튬 topics 공백 후보 상위는 토픽 배정 방식의 산물입니다.** 상위 10쌍 중 7쌍에 나오는 `Advanced Battery Technologies Research` 2,421편 중
   2,272편은 뜻이 거의 같은 배터리 토픽 둘도 함께 달고 있어, 논문당 3개인 토픽 자리가 배터리 토픽으로 찹니다. 연구 공백도, 코퍼스 오염도 아닙니다.
@@ -30,6 +82,12 @@ ABC 모델은 A–B 와 B–C 는 각각 다뤄졌는데 A–C 는 함께 다뤄
 - **공백 후보는 시간이 지나도 대체로 공백으로 남지만, 나중에 채워질 조합을 고른다는 근거는 없습니다.** 인용 필터 없는 리튬 코퍼스를 2022년 이하(train)·이후(test)로 나누면
   concepts 공백 후보 상위 20쌍이 test 에서 함께 태깅된 비율은 61.1%(판정 가능 18쌍 중 11쌍)로 전체 후보 94.2% 보다 낮고, train lift 구간이 높을수록 test lift 중앙값이 커집니다(0.181 → 2.616).
   판정 가능한 쌍이 있는 분할 실행 7개가 모두 같은 방향입니다.
+- **점수끼리의 우열은 짝지은 순열 검정으로만 말할 수 있고, 그렇게 재면 주장이 크게 줄어듭니다.**
+  이 설계에서 AUROC 의 귀무값은 0.5 가 아니라 0.37~0.93 이고(후보가 "양쪽 다 흔한 쌍" 으로 조건화돼 있어서),
+  귀무를 뺀 `excess` 조차 두 점수의 *차이* 에 대한 불확실성을 담지 않습니다. 같은 순열에서 차이를 모아 p 를 내면,
+  `above_chance` 기준에서 lift 는 `random` 8/8 · `preferential_attachment` 7/8 · 이웃 기반 점수 6/8 을 이기지만
+  **정규화하지 않은 공존 수와는 8회 중 3회만 구분됩니다.** `co_tagged` 기준에서는 `random` 상대로도 1/8 뿐이라
+  **그 기준 자체에 변별력이 없습니다**(기준선 0.59~0.96).
 - **"공존 0" 은 수집 조건에 민감합니다.** 피인용 20회 초과 리튬 코퍼스의 concepts 공존 0 쌍 321쌍 중 174쌍(54.2%)은 필터 없이 받은 코퍼스에서는 공존이 있습니다.
   다만 그 쌍들의 lift 중앙값은 0.086 으로 여전히 가장 낮은 구간입니다.
 
@@ -53,7 +111,7 @@ ABC 모델은 A–B 와 B–C 는 각각 다뤄졌는데 A–C 는 함께 다뤄
    netsci stats · citations          netsci concepts · gaps (--bridges: 매개 개념 B)
                                                 │  공백 후보 × 제목·초록 텍스트 공존 / × 이후 연도 공존
                                                 ▼
-                                     netsci verify · evidence · backtest
+                               netsci verify · evidence · backtest · evaluate
 ```
 
 ## 빠른 시작
@@ -77,6 +135,7 @@ cargo run --release -p netsci -- gaps  --data data/li-anode --top 20 --format cs
 | `concepts [--top N] [--taxonomy T] [--min-level L] [--min-score S]` | 동시출현 가중 연결강도 상위 N 개념 |
 | `gaps [--top N] [--min-works W] [--taxonomy T] [--min-level L] [--min-score S] [--bridges K]` | 공백 개념쌍. `K > 0` 이면 쌍마다 매개 개념 후보 `bridges` 열 |
 | `backtest --split-year Y [--top N] [--min-works W] [--taxonomy T] [--summary]` | Y 년까지의 논문으로 뽑은 공백 후보가 이후 논문에서 함께 태깅됐는지 (`--summary` 는 집단별 요약) |
+| `evaluate --split-year Y [--top N] [--min-works W] [--label L] [--null-permutations P] [--reference S] [--taxonomy T]` | 같은 분할을 링크 예측으로 보고 점수 7개를 비교. 순열 귀무값(`auroc_null`), 기준 점수와의 짝지은 검정(`delta`·`p_value`), 계층화 AUROC 를 함께 냄 |
 | `verify [--top N] [--min-works W] [--taxonomy T] [--alias "개념=표현"]...` | 공백 후보 상위 N 쌍을 제목·초록 텍스트 공존과 대조 (`text_lift`, `verdict`) |
 | `evidence --a A --b B [--limit N] [--taxonomy T] [--alias "개념=표현"]...` | 두 표현이 제목·초록에 함께 나오는 논문 표본 (`label` 열은 사람이 채움) |
 
@@ -109,7 +168,8 @@ docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/data:/app/data" netsci gaps 
 
 ## 실제 실행 결과
 
-같은 도구를 성격이 다른 두 분야에 돌렸습니다. **자연과학(리튬 금속 음극)** 과 **소프트웨어(RAG, retrieval-augmented generation)** 입니다.
+같은 도구를 성격이 다른 세 분야에 돌렸습니다. **자연과학(리튬 금속 음극)**, **소프트웨어(RAG, retrieval-augmented generation)**,
+**생물(base editing, 유전자 교정)** 입니다. 아래 분야별 상세 실행은 앞의 두 분야이고, 생물 코퍼스는 `예측력 평가` 절에서 씁니다.
 조건은 둘 다 2018~2024 출판, 피인용 20회 초과이고, 조건에 맞는 논문을 전량 받았습니다.
 아래 출력은 2026-09-17 에 현재 버전으로 실행한 결과를 그대로 옮긴 것이며, OpenAlex 데이터는 계속 갱신되므로 다시 받으면 숫자가 달라질 수 있습니다.
 
@@ -498,6 +558,160 @@ for run in li-anode-phrase-all:2022 rag-phrase-all:2023 li-anode-phrase:2021 rag
 done
 ```
 
+### 예측력 평가 — `evaluate`
+
+`backtest` 는 "공백 후보가 이후에도 공백으로 남는가" 까지만 보여 주고, **"다른 점수와 견주면 lift 가 더 잘 고르는가"** 는 열어 두었습니다.
+`evaluate` 는 같은 연도 분할을 링크 예측 문제로 놓고, train 그래프에서만 매긴 점수 7개를 같은 자(AUROC·precision@k)에 올립니다.
+
+**세 번째 분야로 생물(유전자 교정)을 더했습니다.** Spacer·Nuri 류의 키워드 그래프 접근이 주로 쓰이는 분야가 생물·화학이라,
+기존 두 분야(자연과학·소프트웨어)만으로는 분야 편향을 가릴 수 없었습니다.
+
+```
+netsci fetch --query '"base editing"' --filter "publication_year:2018-2024" --limit 20000 --data data/base-editing-all
+```
+```
+works  year_min  year_max  internal_edges  total_references  internal_ratio  topics  concepts  abstracts
+-----  --------  --------  --------------  ----------------  --------------  ------  --------  ---------
+13516  2018      2024      57118           931372            0.0613          1750    7714      11966
+```
+
+분할 연도는 기존 코퍼스와 같은 규칙(누적 50% 를 넘는 첫 연도)으로 **2023** 입니다(2022년까지 48.4%, 2023년까지 72.5%).
+이 절의 출력은 2026-09-21 에 실행한 결과이고, 생물 코퍼스도 같은 날 받았습니다(68페이지, $0.068). 앞 절들은 2026-09-17 코퍼스 그대로입니다.
+실행 목록·점수 정의·판정 기준은 모두 결과를 보기 전에 [`docs/decisions.md`](docs/decisions.md) 에 적었습니다.
+사전 등록한 20회의 수치를 전부 싣고, 판정 가능 쌍이 30쌍 미만인 실행은 사전 등록한 대로 **읽지 않는다**고 표시합니다.
+
+```
+for run in li-anode-phrase:2021 li-anode-phrase-all:2022 rag-phrase:2023 rag-phrase-all:2023 base-editing-all:2023; do
+  for taxonomy in topics concepts; do
+    for label in co-tagged above-chance; do
+      netsci evaluate --split-year ${run#*:} --taxonomy $taxonomy --label $label --data data/${run%%:*}
+    done
+  done
+done
+```
+
+#### `evaluate --split-year 2023 --taxonomy concepts` (base-editing-all)
+
+`--label above-chance` (test 에서 `test_lift >= 1`), 순열 200회:
+```
+scorer                   pairs  positives  base_rate  auroc  auroc_stratified  auroc_null  excess  delta  delta_null  p_value  permutations  k   precision_at_k  gap_precision_at_k
+-----------------------  -----  ---------  ---------  -----  ----------------  ----------  ------  -----  ----------  -------  ------------  --  --------------  ------------------
+lift                     640    313        0.489      0.925  0.929             0.517       0.408                               200           20  0.950           1.000
+cooccurrence             640    313        0.489      0.886  0.918             0.550       0.336   0.039  -0.033      0.005    200           20  1.000           1.000
+preferential_attachment  640    313        0.489      0.712  0.734             0.568       0.144   0.213  -0.051      0.005    200           20  0.900           0.900
+common_neighbors         640    313        0.489      0.777  0.784             0.558       0.219   0.148  -0.041      0.005    200           20  0.950           1.000
+adamic_adar              640    313        0.489      0.788  0.800             0.558       0.230   0.137  -0.041      0.005    200           20  0.950           1.000
+jaccard                  640    313        0.489      0.733  0.728             0.545       0.188   0.192  -0.028      0.005    200           20  1.000           0.950
+random                   640    313        0.489      0.523  0.523             0.502       0.022   0.402  0.015       0.005    200           20  0.550           0.600
+```
+
+`--label co-tagged` (test 공존 1편 이상):
+```
+scorer                   pairs  positives  base_rate  auroc  auroc_stratified  auroc_null  excess  delta   delta_null  p_value  permutations  k   precision_at_k  gap_precision_at_k
+-----------------------  -----  ---------  ---------  -----  ----------------  ----------  ------  ------  ----------  -------  ------------  --  --------------  ------------------
+lift                     640    561        0.877      0.941  0.942             0.540       0.402                                194           20  1.000           0.826
+cooccurrence             640    561        0.877      0.953  0.941             0.632       0.321   -0.012  -0.092      0.292    194           20  1.000           0.826
+preferential_attachment  640    561        0.877      0.749  0.727             0.699       0.050   0.193   -0.159      0.056    194           20  1.000           0.450
+common_neighbors         640    561        0.877      0.901  0.878             0.632       0.270   0.040   -0.092      0.277    194           20  1.000           0.900
+adamic_adar              640    561        0.877      0.910  0.890             0.634       0.277   0.031   -0.094      0.292    194           20  1.000           1.000
+jaccard                  640    561        0.877      0.847  0.833             0.576       0.270   0.095   -0.037      0.410    194           20  1.000           0.850
+random                   640    561        0.877      0.482  0.470             0.523       -0.041  0.459   0.017       0.118    194           20  0.850           0.150
+```
+
+같은 데이터를 세 가지로 읽을 수 있고, 셋이 다른 답을 냅니다.
+
+| 읽는 법 | `co_tagged` 에서 lift 대 cooccurrence | 무엇이 문제인가 |
+|---|---|---|
+| `auroc` 를 0.5 와 견준다 | 0.941 < 0.953 → **진다** | 귀무값이 0.5 가 아니다 (0.540 대 0.632) |
+| `excess` 부호를 센다 | +0.402 > +0.321 → **이긴다** | 두 점수의 *차이* 에 대한 불확실성이 없다 |
+| **짝지은 순열 검정** | delta −0.012, **p = 0.292** → **구분되지 않는다** | — |
+
+셋째가 맞습니다. `excess` 는 점수마다 **따로** 잰 귀무를 빼므로 차이의 분포를 모르는데, 우열은 차이에 대한 주장입니다.
+`evaluate` 는 순열마다 점수 7개의 AUROC 를 한 행으로 모아 같은 순열에서 `delta = auroc(lift) − auroc(X)` 를 재고,
+그 순열 분포에서 양측 경험적 p 를 냅니다. 순열이 이미 공유되므로 추가 비용은 없습니다.
+
+#### 읽은 실행 16회의 짝지은 검정 (기준 `lift`, 순열 200회)
+
+`p < 0.05` 이고 `delta > 0` 인 실행을 셉니다. **다중비교 보정을 하지 않은 개별 p 값**이므로,
+16회 × 6비교를 한 번에 볼 때는 Bonferroni 기준(0.05/6 = 0.0083)도 함께 적었습니다 — 순열 200회의 p 하한이 0.005 라 그 기준에 닿습니다.
+
+| lift 가 견준 상대 | `above_chance` (8회) | 〃 Bonferroni | `co_tagged` (8회) | 〃 Bonferroni |
+|---|---|---|---|---|
+| `random` | **8 승 · 0 무 · 0 패** | 6 승 | 1 승 · 7 무 · 0 패 | 1 승 |
+| `preferential_attachment` | **7 승 · 1 무 · 0 패** | 4 승 | 4 승 · 4 무 · 0 패 | 1 승 |
+| `common_neighbors` | **6 승 · 2 무 · 0 패** | 5 승 | 1 승 · 7 무 · 0 패 | 0 승 |
+| `adamic_adar` | **6 승 · 2 무 · 0 패** | 5 승 | 1 승 · 7 무 · 0 패 | 0 승 |
+| `jaccard` | **6 승 · 2 무 · 0 패** | 5 승 | 1 승 · 7 무 · 0 패 | 0 승 |
+| `cooccurrence` | 3 승 · 5 무 · 0 패 | 3 승 | 0 승 · 7 무 · **1 패** | 0 승 |
+
+#### 계층화 AUROC — 빈도 교란을 빼면
+
+두 양성 기준은 모두 주변빈도와 상관되므로, 전체에서 한 번 잰 AUROC 에는 "그 쌍이 얼마나 흔한가" 가 섞여 있습니다.
+`test_expected` 십분위 안에서만 견주면 그 교란이 빠집니다(`auroc_stratified`). 읽은 16회에서 계층화로 움직인 양:
+
+| 점수 | 평균 변화 | 최소 | 최대 |
+|---|---:|---:|---:|
+| `lift` | −0.003 | −0.099 | +0.107 |
+| `cooccurrence` | −0.005 | −0.113 | +0.067 |
+| `jaccard` | −0.007 | −0.074 | +0.047 |
+| `adamic_adar` | −0.043 | −0.176 | +0.070 |
+| `common_neighbors` | −0.050 | −0.173 | +0.067 |
+| **`preferential_attachment`** | **−0.112** | **−0.285** | +0.038 |
+| `random` | +0.033 | −0.092 | +0.163 |
+
+**빈도 자체를 점수로 쓰는 `preferential_attachment` 만 크게 무너지고 lift 는 거의 움직이지 않습니다.**
+`li-anode-phrase-all` concepts `co_tagged` 에서는 0.790 → 0.637, `li-anode-phrase` topics `co_tagged` 에서는 0.755 → 0.470 입니다.
+즉 **빈도 점수의 겉보기 실력은 대부분 주변크기 교란이었습니다.**
+계층화 값으로 보면 lift 가 각 대조군보다 높은 실행이 `above_chance` 에서 7~8/8, `co_tagged` 에서 6~8/8 입니다 —
+다만 **이 비교에는 짝지은 검정을 붙이지 않았으므로 우열 주장으로 쓰지 않습니다.** 진단용 값입니다.
+
+#### 읽지 않은 실행 (30쌍 미만) — 사전 등록대로 수치는 싣습니다
+
+`rag-phrase` 는 train 이 331편뿐입니다. **쌍이 적어 읽지 않기로 사전 등록한 실행이고, 이 수치로는 어떤 결론도 세우지 않습니다.**
+
+| 코퍼스 · 분류 | 기준 | 쌍 | 순열 | vs cooccur | vs pref_att | vs common_nb | vs random |
+|---|---|---:|---:|---:|---:|---:|---:|
+| rag-phrase · topics | above_chance | 12 | 199 | −0.014 (p=0.725) | +0.111 (p=0.990) | +0.208 (p=0.745) | +0.431 (p=0.235) |
+| rag-phrase · topics | co_tagged | 12 | 33 | +0.000 (p=1.000) | +0.050 (p=0.794) | +0.050 (p=0.059) | +0.600 (p=0.265) |
+| rag-phrase · concepts | co_tagged | 1 (양성 1 · 음성 0) | 0 | — | — | — | — |
+| rag-phrase · concepts | above_chance | 1 (양성 1 · 음성 0) | 0 | — | — | — | — |
+
+`concepts` 두 실행은 판정 가능 쌍이 1쌍이고 그 쌍이 양성이라 음성이 없어 AUROC·귀무값·p 가 모두 정의되지 않습니다.
+네 실행 모두 `k` 가 쌍 수로 줄어(12·1) `precision_at_k` 가 모든 점수에서 `base_rate` 와 같아집니다.
+
+#### 읽은 것
+
+- **`above_chance` 기준에서 lift 는 무작위·빈도·이웃 기반 점수를 이깁니다.** `random` 상대 8/8,
+  `preferential_attachment` 7/8, 이웃 기반 점수 6/8 이 `p < 0.05` 입니다. 진 실행은 하나도 없습니다.
+- **그런데 정규화하지 않은 공존 수와는 대체로 구분되지 않습니다.** `cooccurrence` 상대로는 8회 중 3회만 유의하고
+  5회는 무승부입니다. **"lift 가 더 나은 점수다" 라고 말할 수 있는 범위는 여기까지입니다.**
+- **`co_tagged` 기준에서는 아무것도 구분되지 않습니다.** lift 는 `random` 상대로도 8회 중 1회만 유의합니다.
+  이건 lift 에 대한 진술이 아니라 **이 기준이 변별력이 없다**는 진술입니다 — 기준선이 0.59~0.96 이라
+  거의 모든 쌍이 양성이고, 그 상태에서는 어떤 점수도 순위 정보를 보여 줄 여지가 없습니다.
+  `li-anode-phrase-all` concepts 에서는 lift 가 `cooccurrence` 에 **유의하게 집니다**(delta −0.028, p = 0.005).
+- **`excess` 부호로 줄 세우면 잡음을 셉니다.** `li-anode-phrase · topics · co_tagged`(56쌍)에서는
+  `random` 의 `excess`(+0.262)가 `lift`(+0.242)보다 큽니다. 그 실행은 200회 중 **88회만** 쓸 수 있었습니다.
+  이웃 기반 점수가 `excess` 로 lift 를 넘는 실행도 하나 있습니다(`rag-phrase-all · topics · co_tagged`, +0.190 대 +0.173).
+  짝지은 검정으로는 둘 다 무승부입니다. `excess` 는 크기를 읽는 데만 쓰고 우열은 `p_value` 로 판단하는 이유입니다.
+- **공백 쪽 정확도(`gap_precision_at_k`)** — lift 하위 20쌍 중 test 에서도 우연보다 덜 함께 나온 비율은
+  `above_chance` 기준 0.825~1.000 입니다. "한 번이라도 함께 태깅됐는가" 로 보면 뒤집어 읽어 0.079~0.850(중앙값 0.447)이라
+  8개 실행 중 5개에서 과반이 끝까지 함께 태깅되지 않았습니다. **"공백이 유지된다" 는 강도 기준에서는 일관되고 존재 기준에서는 그렇지 않습니다.**
+
+> **이 절의 결론은 두 번 뒤집혔습니다.** 처음에는 원시 AUROC 를 0.5 와 견주어 "`co_tagged` 에서 lift 가 8/8 진다" 고 적었고,
+> 순열 귀무기준을 넣은 뒤에는 `excess` 부호를 세어 "16/16 으로 이긴다" 고 적었습니다. 짝지은 검정을 하고 보니 둘 다 과했습니다.
+> 지금 남는 주장은 **"`above_chance` 기준에서 lift 가 무작위·빈도·이웃 점수를 이기지만 공존 수와는 대체로 구분되지 않는다"** 뿐입니다.
+> 무엇을 왜 바꿨는지는 [`docs/decisions.md`](docs/decisions.md) 의 2026-09-21 항목에 순서대로 남겼습니다.
+
+#### 그래도 답하지 않은 것
+
+- 이 평가가 재는 것은 **두 레이블이 이후 논문에 함께 붙었는지**뿐입니다. 가설이 맞았는지도, 연구 가치가 있는지도 아닙니다.
+- **양성 기준이 점수를 편듭니다.** `above_chance` 는 train 의 lift 를 test 기간에 그대로 적용한 기준이라,
+  lift 가 거기서 잘 나오는 데에는 순환이 섞여 있습니다. 순환을 없애는 제3의 기준은 찾지 못했습니다.
+- p 값의 하한은 `1/(순열+1)` 이라 200회에서 0.005 입니다. 표의 `p=0.005` 는 "더 작을 수도 있다" 는 뜻입니다.
+- 기준선이 높은 실행에서는 양성이나 음성이 0 이 된 순열이 빠져 쓸 수 있는 순열이 33~200회로 갈립니다.
+  남은 순열은 레이블 균형이 덜 치우친 것만이라 **귀무 분산이 과소평가**되고, p 가 실제보다 작게 나옵니다.
+- 분할은 코퍼스마다 연도 하나뿐이고, 비교한 것은 표준 이웃·빈도 점수까지입니다. 학습된 점수와는 견주지 않았습니다.
+
 ### 인용 필터의 영향
 
 위 두 분야 결과(피인용 20회 초과)를 같은 검색어·연도의 필터 없는 코퍼스와 비교했습니다.
@@ -541,6 +755,13 @@ netsci gaps --taxonomy concepts --top 100000 --format csv --data data/li-anode-p
 - **derive 는 타입을 추측하지 않습니다** — 매크로는 `<필드 타입 as netsci_report::Cell>::cell(..)` 호출만 만들고, 어떤 타입이 셀이 되는지·`precision` 을 받는지는 `Cell`·`PrecisionCell` 트레이트 구현으로 컴파일러가 판정합니다. 타입 별칭(`type S = Option<f64>`)도 실제 타입대로 처리되고, 문자열에 `precision` 을 붙이면 필드 타입 위치에 컴파일 에러가 납니다.
 - **불변식이 있는 그래프는 필드를 숨깁니다** — `CitationGraph`·`ConceptGraph` 는 `build` 로만 만들고 읽기 전용 접근자만 둡니다. PageRank 는 `&CitationGraph` 를 받아 범위 밖 간선 같은 잘못된 입력을 타입으로 배제합니다.
 - **상위 N 만 정렬** — 순위 명령은 전체 정렬 대신 `select_nth_unstable_by` 로 앞 N 개를 가른 뒤 그 부분만 정렬합니다. 비교를 전순서로 만들어(이름이 같은 개념은 번호로) 출력은 전체 정렬과 같습니다.
+- **평가의 동점 처리를 순서에 맡기지 않습니다** — 후보의 `lift = 0` 은 큰 동점 집단이라(리튬 concepts 후보 3,886쌍 중 321쌍)
+  동점을 임의로 가르면 후보를 나열한 순서가 AUROC 를 좌우합니다. AUROC 는 midrank(양쪽 0.5), `precision_at_k` 는 k 경계에 걸친
+  동점 집단에서 뽑히는 기대 개수로 셉니다. `gap_precision_at_k` 는 점수와 레이블을 함께 뒤집어 같은 함수로 잽니다.
+- **무작위 바닥값은 개념 id 로 정합니다** — 난수 생성기나 개념 번호로 정하면 코퍼스를 읽는 순서에 값이 묶입니다.
+  개념 id 두 개의 FNV-1a 해시로 두면 같은 쌍은 언제나 같은 값이라 실행·입력 순서와 무관하게 재현됩니다.
+- **평가 대상은 판정 가능 쌍(`test_expected >= 3`)뿐입니다** — 한쪽 레이블이 test 에 거의 없는 쌍은 모두 음성으로 들어가
+  음성을 부풀리고 AUROC 를 실제보다 높입니다.
 - **시간 분할은 train 만으로 계산합니다** — `backtest` 는 레이블 필터·`min_works`·기대값·후보를 분할 연도까지의 논문으로만 정하고, test 는 레이블 id 로만 짝짓습니다. 분할 연도 규칙·실행 목록·매개 개념 점수는 결과를 보기 전에 `docs/decisions.md` 에 적었습니다.
 - **현재 스레드 런타임** — 비동기는 `reqwest` 요청과 대기에만 쓰고, cursor 페이지네이션은 본질적으로 순차라 워커 스레드 풀 없이 `current_thread` 로 돌립니다. `works.jsonl` 쓰기 같은 블로킹 입출력은 `spawn_blocking` 으로 보냅니다.
 
@@ -556,10 +777,15 @@ netsci gaps --taxonomy concepts --top 100000 --format csv --data data/li-anode-p
 | `find_gaps` 상위 200 — 전체 정렬 후 자르기 | 3.94 ms |
 | `find_gaps` 상위 200 — 상위 N 선택 | 1.60 ms |
 | `verify_gaps` 상위 20 (초록 3만 편 텍스트 검색) | 425 ms |
+| `evaluate` 점수 7개 (2021년 분할 결과, 순열 없음) | 187.5 ms |
+| `evaluate` 같은 조건 + 순열 20회 (기본값은 200회) | 1.04 s |
 | `CitationGraph::build` | 51.4 ms |
 | `pagerank` (간선 약 12만 개) | 8.85 ms |
 
 공백 탐지는 전수 순회로도 수 ms 이고, 비용은 개념마다 텍스트 전체를 훑는 `verify` 에 몰려 있습니다.
+`evaluate` 는 train·test 그래프를 만들고 후보를 뽑는 분할 비용을 빼고, 이미 나눠 둔 결과에 점수 7개를 매기는 부분만 잰 값입니다.
+순열 귀무기준은 한 번에 (작품, 레이블) 사건 수 × 20 회를 맞바꾸고 동시출현을 다시 세므로 비용이 거기에 몰립니다(20회에 약 0.85초 추가).
+가장 큰 실제 코퍼스(26,685편, concepts)에서는 **순열 한 번에 약 0.085초**라 기본값 200회가 약 17~21초 걸립니다. 귀무값의 점 추정만 필요하면 20회로도 안정적이지만(p 하한이 0.048 이라 검정은 못 합니다), 우열 판단에 p 를 쓰려면 200회가 필요합니다.
 전후 비교는 각각 한 번(표본 10개, 측정 5초)만 잰 값입니다. 코드를 바꾸지 않은 단계도 실행마다 10% 안팎 흔들렸으므로, 상위 N 선택의 효과는 "수 배 차이" 수준으로만 읽어 주세요.
 
 ## 한계
@@ -590,6 +816,42 @@ netsci gaps --taxonomy concepts --top 100000 --format csv --data data/li-anode-p
 - **`lift` 가 낮다고 연구 가치가 있다는 뜻은 아닙니다 — 단지 후보일 뿐입니다.** 태그 기준 공존 0 은 "함께 다뤄지지 않았다" 가 아니라
   "함께 태깅되지 않았다" 는 뜻입니다. 위 기준선에서 태그 공존 0 인 쌍은 텍스트에서도 덜 함께 나오는 경향이 있지만(`text_lift` 중앙값 0.63) 0 이라는 숫자만큼 극단적이지는 않으므로,
   `verify` 로 제목·초록과 대조하고 `evidence` 로 원문 표본을 읽어 확인해야 합니다.
+- **예측력 평가가 재는 것은 "이후에 함께 태깅됐는가" 뿐입니다.** `excess` 가 크다는 것은 점수가 **재현된다**는 뜻이지
+  레이블이 **옳다**는 뜻이 아닙니다. 리튬 topics 처럼 배정 방식의 산물(토픽 자리 포화)도 시간에 따라 유지되므로 높은 값을 받습니다.
+- **원시 AUROC 를 0.5 와 견주면 없는 신호를 읽게 됩니다.** 이 저장소의 초안이 실제로 그렇게 해서 결론 두 개를 반대로 냈습니다
+  (`co_tagged` 에서 lift 가 진다, 빈도만으로도 꽤 맞힌다 — 둘 다 측정 착오였습니다).
+  `evaluate` 가 기본으로 순열 귀무기준을 재는 이유이고, `--null-permutations 0` 으로 끄면 경고를 냅니다.
+- **순열 귀무기준은 기준선 문제만 고칩니다 — 아래의 순환은 고치지 않습니다.** 귀무 아래에는 연관이 아예 없어
+  lift 의 귀무값이 0.5 근처로 나오고, 양성 기준이 lift 를 편드는 구조적 이점은 **실제 연관이 있을 때만** 드러납니다.
+  둘은 별개의 문제이고, 순열이 해결한 것은 앞의 것뿐입니다.
+- **양성 기준이 점수를 편듭니다.** `above_chance`(test 에서 `observed/expected >= 1`)는 **train 의 lift 를 test 기간에 그대로 적용한 기준**이고,
+  `co_tagged`(`observed >= 1`)는 독립 가정 아래 최적 예측자가 `works_a × works_b`, 곧 `preferential_attachment` 인 기준입니다.
+  두 기준이 각각 자기와 같은 정규화를 쓰는 점수를 보상하므로, **lift 가 `above_chance` 에서 잘 나오는 데에는 이 순환이 섞여 있습니다.**
+  그래서 두 기준을 모두 싣고 한쪽 수치만으로 결론을 세우지 않습니다. 순환을 완전히 없애는 제3의 기준은 찾지 못했습니다.
+- **`co_tagged` 수치는 분할 연도가 다른 실행 사이에 비교하면 안 됩니다.** 그 기준선은 test 창이 얼마나 넓은지에 좌우됩니다
+  (같은 리튬 코퍼스에서 분할 2020 이면 0.552, 2023 이면 0.256~0.510). 표의 `base_rate` 를 함께 보고, 코퍼스·분할이 같은 행끼리만 견주세요.
+- **lift 의 변별력은 상당 부분 "train 공존이 0인가" 라는 이진 구분입니다.** 평가 쌍의 절반 가까이가 `lift = 0` 단일 동점 블록이라
+  그 안에서는 순서를 전혀 주지 못합니다. 정규화의 값어치를 과대평가하지 않으려면 이 점을 함께 읽어야 합니다.
+- **`excess` 부호로 점수를 줄 세우면 잡음을 셉니다.** `excess` 는 점수마다 따로 잰 귀무를 빼므로 두 점수의 *차이* 에 대한
+  불확실성이 없습니다. 실제로 `li-anode-phrase-all · topics · co_tagged` 에서는 `random` 의 `excess`(+0.420)가
+  `lift`(+0.148)보다 큽니다. 그래서 우열은 같은 순열에서 잰 `delta` 의 p 값으로만 판단하고, `excess` 는 크기를 읽는 데만 씁니다.
+  관측 AUROC 자체의 오차(개념 단위 부트스트랩)는 여전히 재지 않았습니다 — 쌍이 서로 독립이 아니라(개념 하나가 수백 쌍에 참여)
+  소박한 이항 구간은 너무 좁습니다.
+- **판정 가능 필터(`test_expected >= 3`)가 점수마다 다르게 작용합니다.** 걷어내는 양이 큽니다 —
+  `base-editing-all` concepts 는 후보 4,043쌍 중 640쌍(84% 제거), `rag-phrase-all` 은 951쌍 중 158쌍만 남습니다.
+  필터 자체는 필요하지만(한쪽 레이블이 test 에 없으면 음성이 부풀려집니다) 방향이 있어 lift·공존 수 쪽 AUROC 를 올리고 이웃 기반 점수를 내리며,
+  **분할 연도를 뒤로 밀수록 test 창이 짧아져 편향이 커집니다.** `evaluate` 는 이 분모를 stderr 로 찍고 절반 넘게 빠지면 경고합니다.
+- **이웃 정의에 문턱이 없습니다.** 공존 1편이면 간선으로 치므로 concepts 그래프가 포화됩니다 —
+  `base-editing-all` 에서 쌍당 공통 이웃이 concepts 82.1개, topics 12.6개입니다. 이 상태의 공통 이웃·Jaccard 는 사실상 차수를 다시 재는 것에 가깝고,
+  **"이웃 기반 점수가 lift 에게 졌다" 의 일부는 연관 강도가 아니라 이 설계 선택의 결과입니다.**
+- **쓸 수 있는 순열이 실행마다 다르고, 그 자체가 편향입니다.** 기준선이 높은 실행에서는 양성이나 음성이 0 이 된 순열이 빠져
+  200회 요청에 33~200회만 남습니다. 남은 순열은 레이블 균형이 덜 치우친 것만이라 **귀무 분산이 과소평가되고 p 가 실제보다 작게 나옵니다.**
+  `evaluate` 는 이 경우 경고를 냅니다. p 의 하한도 `1/(순열+1)` 이라 200회에서 0.005 입니다.
+  섞는 양(사건 수 × 20회)이 충분한지는 확인하지 않았습니다.
+- **분할은 코퍼스마다 연도 하나뿐입니다.** `base-editing-all`·`rag-phrase-all` 은 test 가 2024년 한 해이고,
+  분할을 여러 개 두고 분산을 본 적이 없어 AUROC 차이의 오차 범위를 모릅니다. 비교 대상도 표준 이웃·빈도 점수까지이고 학습된 점수와는 견주지 않았습니다.
+- **판정 가능 쌍만 평가하므로 모수가 후보보다 작습니다.** `test_expected >= 3` 을 넘지 못한 쌍은 빠지며,
+  `rag-phrase` 는 그 결과 판정 가능 쌍이 concepts 1쌍·topics 12쌍뿐이라 사전 등록한 대로 수치를 읽지 않았습니다.
 - **시간 분할 검증은 "낮은 공존이 유지되는가" 까지만 보여 줍니다.** `backtest` 에서 공백 후보가 이후 함께 태깅되는 비율은 기준선보다 낮았고,
   이후 공존은 가설이 맞았다는 뜻이 아니라 두 태그가 함께 붙었다는 뜻입니다. 분할은 코퍼스마다 연도 하나(누적 50% 규칙)로만 했고, RAG 는 test 가 2024년 한 해입니다.
   나중에 연결될 조합을 더 잘 고르는 점수가 있는지(다른 점수와의 비교)는 확인하지 않았습니다.
