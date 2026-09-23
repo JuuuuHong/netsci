@@ -434,6 +434,38 @@ async fn 한도가_이미_소진됐으면_받은_페이지로_works_jsonl_을_�
 }
 
 #[tokio::test]
+async fn 한도가_소진돼_받은_작품이_없으면_기존_works_jsonl_을_덮어쓰지_않는다() {
+    let dir = temp_dir("budget-empty");
+    let p = params("q", 100);
+    // 첫 페이지 캐시를 지운 상황: query.json 과 기존 works.jsonl 만 남아 있다.
+    seed_cache(&dir, &p, &[]);
+    let existing = "{\"id\":\"W1\"}\n";
+    std::fs::write(dir.join("works.jsonl"), existing).unwrap();
+
+    let mut client = FakeClient::default();
+    client
+        .responses
+        .push_back(Err(OpenAlexError::BudgetExhausted {
+            status: 429,
+            remaining_usd: 0.0,
+        }));
+    let err = fetch::fetch(&mut client, &dir, &p).await.unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            FetchError::OpenAlex(OpenAlexError::BudgetExhausted { .. })
+        ),
+        "{err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("works.jsonl")).unwrap(),
+        existing
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
 async fn query_json_없이_캐시만_있으면_에러() {
     let dir = temp_dir("orphan");
     std::fs::create_dir_all(dir.join("raw")).unwrap();

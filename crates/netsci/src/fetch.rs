@@ -137,6 +137,10 @@ pub async fn fetch<C: WorksClient>(
                 Ok(fetched) => fetched,
                 // 한도가 이미 소진된 경우도 지금까지 받은 페이지로 works.jsonl 을 쓴다.
                 // 여기서 에러로 끝내면 한도가 풀릴 때까지 이미 받은 페이지로도 분석할 수 없다.
+                // 다만 모은 작품이 하나도 없으면 에러로 끝낸다. 빈 목록을 쓰면 기존 works.jsonl 이 0편이 된다.
+                Err(err @ OpenAlexError::BudgetExhausted { .. }) if collected.is_empty() => {
+                    return Err(err.into());
+                }
                 Err(err @ OpenAlexError::BudgetExhausted { .. }) => {
                     eprintln!("경고: {err}. 지금까지 받은 페이지로 works.jsonl 을 쓴다");
                     summary.stopped_by_budget = true;
