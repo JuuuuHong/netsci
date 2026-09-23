@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1
 
 # ---- 빌드 단계 ----------------------------------------------------------------
-# 실행 이미지(bookworm, glibc 2.36)와 같은 배포판으로 빌드해 glibc 버전 불일치를 막는다
-FROM rust:1-slim-bookworm AS builder
+# 실행 이미지(bookworm, glibc 2.36)와 같은 배포판으로 빌드해 glibc 버전 불일치를 막는다.
+# 판은 `rust-toolchain.toml` 과 같게 두고, 태그가 옮겨져도 바뀌지 않도록 digest 로 고정한다
+FROM rust:1.98.1-slim-bookworm@sha256:ff521445a372125ed4f76e1453a1f8098f2d05332d1601d30db1c1f62757e730 AS builder
 WORKDIR /src
 
 COPY . .
@@ -16,7 +17,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp target/release/netsci /usr/local/bin/netsci
 
 # ---- 실행 단계 ----------------------------------------------------------------
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 
 # HTTPS(rustls) 인증서 검증용 루트 인증서
 RUN apt-get update \

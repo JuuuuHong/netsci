@@ -21,8 +21,12 @@ jobs:
   check:
     name: fmt · clippy · test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      # 액션은 태그가 옮겨져도 바뀌지 않도록 커밋 SHA 로 고정한다
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       # 인자 없이 부르면 `rust-toolchain.toml` 의 판과 컴포넌트를 그대로 설치한다.
       # (`rustup show` 는 판에 따라 자동 설치 여부가 달라져 쓰지 않는다)
@@ -30,7 +34,7 @@ jobs:
         run: rustup toolchain install
 
       # 툴체인 설치 뒤에 둔다 — 캐시 키에 rustc 판이 들어가야 한다
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: 포맷 검사
         run: cargo fmt --check
@@ -43,11 +47,31 @@ jobs:
       - name: 테스트
         run: cargo test --locked
 
+  # RustSec 권고 DB 와 `Cargo.lock` 을 대조한다. 권고는 코드 변경 없이도 새로 나오므로 PR 마다 본다
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # check job 과 같은 이유로 `rust-toolchain.toml` 의 판을 명시적으로 설치한다
+      - name: 툴체인 설치
+        run: rustup toolchain install
+      - name: cargo-audit 설치
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: 감사
+        run: cargo audit
+
   docker:
     name: docker build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: 이미지 빌드
         run: docker build -t netsci .
       - name: 도움말이 뜨는지 확인

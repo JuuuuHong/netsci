@@ -3,7 +3,8 @@ target/
 data/
 .git/
 **/.omc/
-# rust:1-slim 에 이미 있는 툴체인을 쓰도록 한다.
-# 이 파일이 있으면 rustup 이 `stable` 채널과 rustfmt·clippy 를 새로 내려받는다.
+.idea/
+# 빌드 이미지에 이미 있는 툴체인(Dockerfile 에서 같은 판으로 고정)을 쓰도록 한다.
+# 이 파일이 있으면 rustup 이 rustfmt·clippy 를 새로 내려받는다.
 rust-toolchain.toml
 .github/
