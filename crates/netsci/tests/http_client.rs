@@ -150,6 +150,27 @@ async fn 요청_오류는_재시도하지_않고_한도가_낮아도_원래_에�
 }
 
 #[tokio::test]
+async fn 에러_본문의_api_key_와_제어_문자를_가리고_길이를_자른다() {
+    // 서버가 요청 URL 을 본문에 되돌려 주는 경우를 흉내 낸다
+    let body = format!(
+        "bad request: /works?api_key=secret\x1b[31m{}",
+        "x".repeat(1000)
+    );
+    let (url, _) = serve(vec![response("400 Bad Request", &[], &body)]);
+    let mut client = HttpClient::with_base_url(&url, Some("secret".to_string())).unwrap();
+    let err = client.fetch_page(&request()).await.unwrap_err();
+
+    let OpenAlexError::Status { status: 400, body } = err else {
+        panic!("{err}");
+    };
+    assert!(!body.contains("secret"), "{body}");
+    assert!(body.contains("api_key=***"), "{body}");
+    assert!(!body.contains('\x1b'), "{body}");
+    assert_eq!(body.chars().count(), 501, "500자 + 생략 표시");
+    assert!(body.ends_with('…'));
+}
+
+#[tokio::test]
 async fn 한도가_소진된_429_는_재시도하지_않는다() {
     let (url, log) = serve(vec![response(
         "429 Too Many Requests",

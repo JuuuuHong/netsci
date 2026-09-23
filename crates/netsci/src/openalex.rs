@@ -277,9 +277,10 @@ impl WorksClient for HttpClient {
                 });
             }
             if !retryable || attempt >= MAX_RETRIES {
+                let body = response.text().await.unwrap_or_default();
                 return Err(OpenAlexError::Status {
                     status: status.as_u16(),
-                    body: response.text().await.unwrap_or_default(),
+                    body: sanitize_error_body(&body, self.api_key.as_deref()),
                 });
             }
             let retry_after = headers
@@ -296,6 +297,30 @@ impl WorksClient for HttpClient {
         }
     }
 }
+
+/// 에러 응답 본문에서 오류 메시지에 넣을 부분만 남긴다.
+///
+/// 서버나 중간 프록시가 요청 URL 을 본문에 되돌려 줄 수 있으므로 `api_key` 를 가리고,
+/// 원격에서 온 제어 문자(ANSI 이스케이프 등)가 터미널을 조작하지 못하게 공백으로 바꾸며,
+/// HTML 오류 페이지가 통째로 찍히지 않도록 [`MAX_ERROR_BODY_CHARS`] 자에서 자른다.
+fn sanitize_error_body(body: &str, api_key: Option<&str>) -> String {
+    let masked = match api_key {
+        Some(key) if !key.is_empty() => body.replace(key, "***"),
+        _ => body.to_string(),
+    };
+    let mut out: String = masked
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(MAX_ERROR_BODY_CHARS)
+        .collect();
+    if masked.chars().count() > MAX_ERROR_BODY_CHARS {
+        out.push('…');
+    }
+    out
+}
+
+/// 오류 메시지에 넣는 에러 응답 본문의 최대 글자 수.
+const MAX_ERROR_BODY_CHARS: usize = 500;
 
 /// 재시도 대기 시간. `Retry-After`(초 단위 정수)가 있으면 그 값, 없으면 1s·2s·4s 지수 백오프.
 /// 어느 쪽이든 [`MAX_RETRY_DELAY`] 를 넘지 않는다.
