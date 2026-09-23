@@ -374,7 +374,7 @@ async fn main() -> anyhow::Result<()> {
                 );
                 if row.permutations < null_permutations {
                     eprintln!(
-                        "경고: 양성이나 음성이 0 이 된 순열이 빠졌다. 남은 순열은 레이블 균형이 덜 치우친 것만이라 귀무 분산이 과소평가된다"
+                        "경고: 양성이나 음성이 0 이 된 순열이 빠졌다. 남은 순열은 음성(또는 양성)이 몇 개뿐이라 귀무값이 그 몇 쌍에 좌우된다"
                     );
                 }
             }

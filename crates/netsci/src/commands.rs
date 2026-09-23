@@ -383,13 +383,13 @@ pub struct EvaluateRow {
     /// 값이 클수록 이후 공존을 잘 맞힌다. **0.5 는 이 설계의 귀무값이 아니다** — `auroc_null` 과 함께 읽는다
     #[report(precision = 3)]
     pub auroc: Option<f64>,
-    /// `test_expected` 십분위 안에서 잰 AUROC 의 가중평균 (§5.11). 주변빈도 교란을 뺀 **진단용** 값이고 우열 판단에는 쓰지 않는다
+    /// `test_expected` 십분위 안에서 잰 AUROC 의 가중평균 (§5.11). 주변빈도 교란을 뺀 **진단용** 값이고 단독으로 우열을 세우지 않는다
     #[report(precision = 3)]
     pub auroc_stratified: Option<f64>,
     /// 주변분포를 보존한 순열에서 나온 AUROC 평균 (§5.9). 순열을 돌리지 않았으면 빈 칸
     #[report(precision = 3)]
     pub auroc_null: Option<f64>,
-    /// `auroc - auroc_null`. **점수끼리 비교할 때 읽어야 하는 값이다**
+    /// `auroc - auroc_null`. 귀무를 뺀 크기를 읽는 값이고, 점수끼리의 차이에 대한 불확실성은 담지 않는다
     #[report(precision = 3)]
     pub excess: Option<f64>,
     /// `auroc(기준 점수) - auroc(이 점수)`. 기준 점수 자신은 빈 칸
@@ -398,7 +398,8 @@ pub struct EvaluateRow {
     /// 같은 순열에서 잰 `delta` 의 귀무 평균
     #[report(precision = 3)]
     pub delta_null: Option<f64>,
-    /// `delta` 의 양측 경험적 p 값. **점수끼리의 우열은 이 값으로 판단한다** (하한은 `1/(순열+1)`)
+    /// `delta` 가 `delta_null` 에서 벗어난 정도의 양측 경험적 p 값 (하한은 `1/(순열+1)`).
+    /// p 의 방향은 `delta - delta_null` 이다. 귀무는 "두 점수가 같다" 가 아니라 "test 연관이 없다" 이므로, 승패는 원시 `delta`·계층화 차이와 방향이 같을 때만 센다 (§5.10)
     #[report(precision = 3)]
     pub p_value: Option<f64>,
     /// 실제로 쓴 순열 횟수
