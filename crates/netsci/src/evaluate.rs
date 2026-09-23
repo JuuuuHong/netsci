@@ -7,7 +7,8 @@
 //! **AUROC 0.5 를 귀무값으로 읽으면 안 된다.** 평가 대상이 무작위 쌍이 아니라 "양쪽 다 흔한 레이블 쌍" 으로
 //! 조건화돼 있고 레이블 정의와 점수가 둘 다 주변빈도와 상관되므로, 연관이 전혀 없어도 AUROC 가 0.5 에서
 //! 크게 벗어난다(실측 0.41~0.81, 순열 200회를 모두 쓴 실행 기준). 귀무값을 뺀 [`ScorerResult::excess`] 는 크기를 읽는 데 쓰고,
-//! 점수끼리의 우열은 같은 순열에서 잰 차이의 [`ScorerResult::p_value`] 로 판단한다 (§5.9·§5.10).
+//! 점수끼리의 차이는 같은 순열에서 잰 차이의 [`ScorerResult::p_value`] 로 본다 (§5.9·§5.10).
+//! 이 p 의 귀무는 "test 연관이 없다" 이므로, 연관이 있는 상태에서 두 점수가 같은지는 검정하지 않는다.
 //!
 //! **이 평가는 "가설이 맞았다" 를 재지 않는다.** 재는 것은 두 레이블이 이후 논문에 함께 붙었는지뿐이고,
 //! 전역 평균인 AUROC 로 "공백 후보 쪽 꼬리" 를 주장할 수도 없다 — 그 역할은 `gap_precision_at_k` 다.
@@ -76,6 +77,7 @@ pub enum Scorer {
 }
 
 impl Scorer {
+    /// 선언 순서와 같다. 평가 결과의 자리를 판별값(`scorer as usize`)으로 찾으므로 순서를 바꾸면 안 된다.
     pub const ALL: [Self; 7] = [
         Self::Lift,
         Self::Cooccurrence,
@@ -223,7 +225,7 @@ pub struct ScorerResult {
     pub scorer: Scorer,
     /// 양성 또는 음성이 하나도 없으면 `None`
     pub auroc: Option<f64>,
-    /// `test_expected` 십분위 안에서 재 가중평균한 AUROC (§5.11). 주변빈도 교란을 뺀 진단용 값이고 우열 판단에는 쓰지 않는다
+    /// `test_expected` 십분위 안에서 재 가중평균한 AUROC (§5.11). 주변빈도 교란을 뺀 진단용 값이고, 단독으로 우열을 세우지 않고 승패의 방향 확인에만 쓴다
     pub auroc_stratified: Option<f64>,
     /// 순열 귀무기준의 AUROC 평균 (§5.9). 순열을 돌리지 않았거나 쓸 수 있는 순열이 없으면 `None`
     pub auroc_null: Option<f64>,
@@ -233,7 +235,8 @@ pub struct ScorerResult {
     pub delta: Option<f64>,
     /// 같은 순열에서 잰 `delta` 의 귀무 평균
     pub delta_null: Option<f64>,
-    /// `delta` 의 양측 경험적 p 값. **점수끼리의 우열은 이 값으로 판단한다**
+    /// `delta` 가 `delta_null` 에서 벗어난 정도의 양측 경험적 p 값. p 의 방향은 `delta - delta_null` 이고, 승패는 원시 `delta`·계층화 차이와 방향이 같을 때만 센다.
+    /// 귀무는 "두 점수가 같다" 가 아니라 "test 연관이 없다" 라서, 기각은 "excess 의 차이가 무연관 아래 흔들림보다 크다" 는 뜻이다 (§5.10)
     pub p_value: Option<f64>,
     /// 점수 상위 k 개의 양성 비율. 쌍이 없으면 `None`
     pub precision_at_k: Option<f64>,
@@ -253,7 +256,7 @@ pub struct Evaluation {
     /// 실제로 쓴 순열 횟수 (AUROC 가 정의된 순열만 센다). 0 이면 귀무 열이 모두 빈 칸이다
     pub permutations: usize,
     /// 요청한 순열 횟수. [`Self::permutations`] 보다 크면 전부-양성 같은 순열이 빠졌다는 뜻이고,
-    /// 남은 순열은 레이블 균형이 덜 치우친 것만이라 **귀무 분산이 과소평가된다**
+    /// 남은 순열에는 음성(또는 양성)이 몇 개뿐인 행이 많아 귀무 AUROC 가 그 몇 쌍의 순위에 좌우된다 (§5.10)
     pub requested_permutations: usize,
     /// `k` (상위·하위 몇 개를 볼지). 쌍 수보다 크면 쌍 수로 줄인다.
     ///
@@ -267,7 +270,7 @@ pub struct Evaluation {
 impl ScorerResult {
     /// `auroc - auroc_null` — 같은 주변분포에서 기대되는 만큼을 뺀 초과분. AUROC 척도로 크기를 읽을 때 쓴다.
     ///
-    /// **점수끼리의 우열을 판단할 때는 이 값이 아니라 [`ScorerResult::p_value`] 를 본다** — `excess` 는
+    /// **점수끼리의 우열을 이 값으로 판단하지 않는다** — `excess` 는
     /// 점수마다 따로 잰 귀무를 빼므로 두 점수의 *차이* 에 대한 불확실성을 담지 않는다. 작은 실행에서는
     /// `random` 의 `excess` 조차 ±0.2 까지 흔들려 `lift` 를 넘기도 한다 (§5.10).
     pub fn excess(&self) -> Option<f64> {
@@ -393,8 +396,8 @@ fn cooccurrence(documents: &[Vec<u32>]) -> HashMap<(u32, u32), u32> {
 ///
 /// `permutations > 0` 이면 test 이분그래프를 그만큼 섞어 귀무 AUROC 를 함께 잰다 (§5.9).
 /// **이 설계에서 AUROC 의 귀무값은 0.5 가 아니므로**(후보가 "양쪽 다 흔한 레이블 쌍" 으로 조건화돼 있고
-/// 레이블 정의와 점수가 둘 다 주변빈도와 상관된다) 점수끼리 비교할 때는 `auroc` 가 아니라
-/// [`ScorerResult::excess`] 를 읽어야 한다.
+/// 레이블 정의와 점수가 둘 다 주변빈도와 상관된다) `auroc` 를 0.5 와 견주면 안 된다.
+/// 크기는 [`ScorerResult::excess`] 로, 점수끼리의 차이는 [`ScorerResult::p_value`] 로 읽는다.
 ///
 /// 비용: 판정 가능 쌍 P 개, 개념의 최대 차수 D 일 때 이웃 기반 점수가 O(P·D) 다.
 /// 인접 목록은 한 번만 만들어 모든 점수가 나눠 쓰지만, **공통 이웃은 쌍마다 다시 계산한다**
@@ -432,10 +435,8 @@ pub fn evaluate(
     });
 
     let samples = null_samples(result, &pairs, label, &scores, permutations);
-    let reference_index = Scorer::ALL
-        .iter()
-        .position(|&s| s == reference)
-        .expect("Scorer::ALL 에 모든 점수가 있다");
+    // `Scorer::ALL` 은 선언 순서와 같으므로 판별값이 곧 자리다 (테스트로 고정했다).
+    let reference_index = reference as usize;
 
     let scorers = std::array::from_fn(|i| {
         let scored: Vec<(f64, bool)> = scores[i]
@@ -551,10 +552,11 @@ fn null_samples(
                     auroc(&scored)
                 })
                 .collect();
+            // 하나라도 정의되지 않으면 이 순열은 뺀다. 길이는 `Scorer::ALL` 과 같아 변환이 실패하지 않는다.
             values
-                .iter()
-                .all(Option::is_some)
-                .then(|| std::array::from_fn(|i| values[i].expect("모두 정의됨을 확인했다")))
+                .into_iter()
+                .collect::<Option<Vec<f64>>>()
+                .and_then(|row| row.try_into().ok())
         };
         if let Some(row) = row {
             samples.push(row);
@@ -596,7 +598,7 @@ fn empirical_p(observed: f64, null: &[f64]) -> Option<f64> {
 /// 견주면 그 교란이 빠진다. 빈도 자체를 점수로 쓰는 `preferential_attachment` 가 특히 크게 내려간다.
 ///
 /// **진단용 값이다.** 순열 귀무기준과 짝지은 검정(§5.9·§5.10)은 계층화하지 않은 AUROC 로 하므로,
-/// 이 값으로 점수의 우열을 세우지 않는다.
+/// 이 값만으로 점수의 우열을 세우지 않는다. 짝지은 검정의 승패가 원시 차이와 같은 방향인지 확인하는 데만 쓴다 (§5.10).
 ///
 /// 계층은 `strata` 값의 순위로 같은 개수씩 나눈다. 양성이나 음성이 없어 AUROC 가 정의되지 않는 계층은 빼고,
 /// 남은 계층이 없으면 `None`. `bins` 가 0 이거나 쌍이 없어도 `None`.
@@ -696,4 +698,71 @@ pub fn precision_at_k(scored: &[(f64, bool)], k: usize) -> Option<f64> {
         start = end;
     }
     Some(hits / k as f64)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::{NULL_SEED, Rng, empirical_p, shuffle};
+
+    /// 레이블별 등장 수.
+    fn label_counts(documents: &[Vec<u32>]) -> HashMap<u32, usize> {
+        let mut counts = HashMap::new();
+        for &label in documents.iter().flatten() {
+            *counts.entry(label).or_insert(0) += 1;
+        }
+        counts
+    }
+
+    #[test]
+    fn empirical_p_는_귀무_평균을_중심으로_양측을_센다() {
+        // 귀무 평균은 0.5 이고, 각 값의 평균에서의 거리는 1.5·0.5·0.5·1.5 다
+        let null = [-1.0, 0.0, 1.0, 2.0];
+        let p = |observed| empirical_p(observed, &null).unwrap();
+        // 거리 1.5 이상은 양 끝 둘 → (1 + 2) / 5. 중심을 0 으로 잡으면 (1 + 3) / 5 가 된다
+        assert!((p(-1.0) - 0.6).abs() < 1e-12);
+        // 양측이므로 반대편 같은 거리도 같은 p
+        assert!((p(2.0) - 0.6).abs() < 1e-12);
+        // 어떤 귀무값보다 멀면 하한 1 / (n + 1)
+        assert!((p(3.0) - 0.2).abs() < 1e-12);
+        // 평균 그 자체면 모든 귀무값이 그만큼 극단이다
+        assert!((p(0.5) - 1.0).abs() < 1e-12);
+        assert_eq!(empirical_p(1.0, &[]), None);
+    }
+
+    #[test]
+    fn shuffle_은_주변분포를_보존하고_연관만_바꾼다() {
+        // 레이블 0·1 이 늘 함께 붙고 2·3 이 늘 함께 붙는, 연관이 뚜렷한 문서 목록
+        let documents: Vec<Vec<u32>> = (0..40)
+            .map(|i| {
+                if i % 2 == 0 {
+                    vec![0, 1, 4]
+                } else {
+                    vec![2, 3, 5]
+                }
+            })
+            .collect();
+        let mut rng = Rng(NULL_SEED);
+        let shuffled = shuffle(&documents, &mut rng);
+
+        // 작품별 레이블 수가 그대로다
+        let lengths: Vec<usize> = shuffled.iter().map(Vec::len).collect();
+        assert_eq!(lengths, documents.iter().map(Vec::len).collect::<Vec<_>>());
+        // 레이블별 작품 수가 그대로다
+        assert_eq!(label_counts(&shuffled), label_counts(&documents));
+        // 한 작품에 같은 레이블이 두 번 붙지 않는다
+        for labels in &shuffled {
+            let mut sorted = labels.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(sorted.len(), labels.len(), "{labels:?}");
+        }
+        // 연관은 실제로 깨진다: 0·1 을 함께 단 작품이 더는 20편 전부가 아니다
+        let together = shuffled
+            .iter()
+            .filter(|labels| labels.contains(&0) && labels.contains(&1))
+            .count();
+        assert!(together < 20, "0·1 공존 {together}편");
+    }
 }

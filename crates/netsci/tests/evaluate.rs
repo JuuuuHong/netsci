@@ -304,7 +304,7 @@ fn precision_은_동점_집단을_기대_개수로_센다() {
 }
 
 #[test]
-fn 순열_귀무기준은_레이블_빈도를_보존한다() {
+fn 순열_귀무기준은_관측_통계를_바꾸지_않고_귀무값을_따로_낸다() {
     let works = corpus();
     let result = backtest(&works, &ConceptFilter::concepts(), 3, 2021);
     // `co_tagged` 는 이 코퍼스에서 음성이 1쌍뿐이라 순열이 거의 언제나 전부 양성이 되어
@@ -361,15 +361,10 @@ fn 순열_귀무기준은_씨앗이_같아_재현된다() {
 }
 
 #[test]
-fn 순열은_판정_가능_쌍_집합을_바꾸지_않는다() {
-    // test_expected 는 레이블 빈도로만 정해지고 순열은 그 빈도를 보존하므로 쌍 수가 그대로여야 한다
-    let result = backtest(&corpus(), &ConceptFilter::concepts(), 3, 2021);
-    for permutations in [0, 1, 5, 25] {
-        assert_eq!(
-            evaluate(&result, Positive::CoTagged, 2, permutations, Scorer::Lift).pairs,
-            6,
-            "순열 {permutations}회"
-        );
+fn scorer_all_은_선언_순서와_같다() {
+    // 평가 결과의 자리를 판별값으로 찾으므로 순서가 어긋나면 기준 점수가 다른 점수로 바뀐다
+    for (i, scorer) in Scorer::ALL.iter().enumerate() {
+        assert_eq!(*scorer as usize, i, "{scorer:?}");
     }
 }
 
@@ -506,7 +501,7 @@ fn 순열_귀무기준도_코퍼스_순서에_좌우되지_않는다() {
 }
 
 #[test]
-fn 짝지은_검정은_같은_순열에서_차이를_모은다() {
+fn 짝지은_검정의_delta_와_p_값_범위와_기준_대칭을_확인한다() {
     let result = backtest(&uneven_corpus(), &ConceptFilter::concepts(), 3, 2021);
     let evaluation = evaluate(&result, Positive::CoTagged, 3, 50, Scorer::Lift);
 
